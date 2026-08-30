@@ -357,18 +357,25 @@ impl Store {
     /// Search active decisions across scopes and hybrid-rank them. `kinds` is an optional
     /// type facet (`decision`/`fact`/`reference`/…); an empty slice applies no facet.
     pub fn search(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Decision>> {
+        self.search_with(query, scopes, kinds, limit, false)
+    }
+
+    /// `search` with supersession control. `include_superseded` relaxes the active-only filter so
+    /// retired decisions surface too — the historical arm of "what changed and why".
+    pub fn search_with(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<Decision>> {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
-        let (rows, rowids) = self.select_decisions(scopes, kinds)?;
-        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit)?;
+        let (rows, rowids) = self.select_decisions(scopes, kinds, include_superseded)?;
+        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
         let qe = self.query_embedding(query);
         Ok(rank(query, qe.as_deref(), rows, lexical, now_epoch(), limit))
     }
 
-    /// Fetch active candidate rows with their integer rowids, in scope and kind order. The
+    /// Fetch candidate rows with their integer rowids, in scope and kind order. The
     /// rowid is the join key between the semantic candidates and the FTS5 lexical index.
-    fn select_decisions(&self, scopes: &[&str], kinds: &[String]) -> Result<(Vec<Decision>, Vec<i64>)> {
+    fn select_decisions(&self, scopes: &[&str], kinds: &[String], include_superseded: bool) -> Result<(Vec<Decision>, Vec<i64>)> {
+        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL AND valid_until IS NULL" };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -379,7 +386,7 @@ impl Store {
             "SELECT rowid,kind,title,content,importance,source,author,commit_sha,date,updated_at,
                     COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
-             WHERE superseded_by IS NULL AND valid_until IS NULL
+             WHERE 1=1{validity}
                AND scope IN ({placeholders}){kind_clause}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -426,16 +433,17 @@ impl Store {
         scopes: &[&str],
         kinds: &[String],
         limit: usize,
+        include_superseded: bool,
     ) -> Result<Vec<usize>> {
         let index: HashMap<i64, usize> = rowids.iter().enumerate().map(|(i, &r)| (r, i)).collect();
-        let ordered = self.lexical_rowids(query, scopes, kinds, limit)?;
+        let ordered = self.lexical_rowids(query, scopes, kinds, limit, include_superseded)?;
         Ok(ordered.iter().filter_map(|r| index.get(r).copied()).collect())
     }
 
     /// Run the FTS5 lexical query (narrow-then-broad over quoted terms) and return the matched
     /// rowids ordered by `bm25(decisions_fts, 0, 10, 5, 1)`. This is the exact engine cogitod's
     /// `MemoryRepository.lexicalSearchIds` runs, so parity is a query shape, not a re-derivation.
-    fn lexical_rowids(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<i64>> {
+    fn lexical_rowids(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<i64>> {
         let terms = crate::search::tokenize(query);
         if terms.is_empty() {
             return Ok(Vec::new());
@@ -444,6 +452,7 @@ impl Store {
         let narrow_floor = limit.min(5);
         let overfetch = limit.saturating_mul(10).max(limit);
 
+        let validity = if include_superseded { "" } else { " AND d.superseded_by IS NULL AND d.valid_until IS NULL" };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -453,8 +462,7 @@ impl Store {
         let sql = format!(
             "SELECT d.rowid FROM decisions_fts
              JOIN decisions d ON d.rowid = decisions_fts.rowid
-             WHERE decisions_fts MATCH ?1
-               AND d.superseded_by IS NULL AND d.valid_until IS NULL
+             WHERE decisions_fts MATCH ?1{validity}
                AND d.scope IN ({placeholders}){kind_clause}
              ORDER BY bm25(decisions_fts, 0, 10, 5, 1)
              LIMIT ?"
@@ -530,11 +538,17 @@ impl Store {
     /// Search active decisions across scopes and return full records (id + temporal
     /// window) in hybrid-ranked order. Structured counterpart of `search`.
     pub fn search_records(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Record>> {
+        self.search_records_with(query, scopes, kinds, limit, false)
+    }
+
+    /// `search_records` with supersession control. With `include_superseded`, retired decisions
+    /// surface too and carry their `superseded_by` / `valid_until` so a caller can follow the chain.
+    pub fn search_records_with(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<Record>> {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
-        let (rows, rowids) = self.select_records(scopes, kinds)?;
-        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit)?;
+        let (rows, rowids) = self.select_records(scopes, kinds, include_superseded)?;
+        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
         let qe = self.query_embedding(query);
         Ok(rank_by(query, qe.as_deref(), rows, lexical, now_epoch(), limit, |d| RankRow {
             importance: d.importance,
@@ -547,7 +561,8 @@ impl Store {
         }))
     }
 
-    fn select_records(&self, scopes: &[&str], kinds: &[String]) -> Result<(Vec<Record>, Vec<i64>)> {
+    fn select_records(&self, scopes: &[&str], kinds: &[String], include_superseded: bool) -> Result<(Vec<Record>, Vec<i64>)> {
+        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL AND valid_until IS NULL" };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -559,7 +574,7 @@ impl Store {
                     superseded_by,valid_from,valid_until,updated_at,
                     COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
-             WHERE superseded_by IS NULL AND valid_until IS NULL
+             WHERE 1=1{validity}
                AND scope IN ({placeholders}){kind_clause}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -603,36 +618,65 @@ impl Store {
     }
 
     pub fn get_record(&self, id: &str) -> Result<Option<Record>> {
+        self.get_record_any(id, false)
+    }
+
+    /// Fetch a record by id, optionally reaching past supersession (historical mode). The
+    /// `superseded_by` / `valid_until` fields describe where the record sits in its chain.
+    pub fn get_record_any(&self, id: &str, include_superseded: bool) -> Result<Option<Record>> {
+        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL" };
+        let sql = format!(
+            "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                    superseded_by,valid_from,valid_until,updated_at,
+                    COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness
+             FROM decisions WHERE id=?1{validity}"
+        );
         Ok(self
             .conn
-            .query_row(
-                "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                        superseded_by,valid_from,valid_until
-                 FROM decisions WHERE id=?1 AND superseded_by IS NULL",
-                params![id],
-                |r| {
-                    Ok(Record {
-                        id: r.get(0)?,
-                        kind: r.get(1)?,
-                        title: r.get(2)?,
-                        content: r.get(3)?,
-                        importance: r.get(4)?,
-                        source: r.get(5)?,
-                        author: r.get(6)?,
-                        commit_sha: r.get(7)?,
-                        date: r.get(8)?,
-                        scope: r.get(9)?,
-                        superseded_by: r.get(10)?,
-                        valid_from: r.get(11)?,
-                        valid_until: r.get(12)?,
-                        updated_at: String::new(),
-                        access_count: 0,
-                        effectiveness: 0.5,
-                        embedding: None,
-                    })
-                },
-            )
+            .query_row(&sql, params![id], |r| {
+                Ok(Record {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    title: r.get(2)?,
+                    content: r.get(3)?,
+                    importance: r.get(4)?,
+                    source: r.get(5)?,
+                    author: r.get(6)?,
+                    commit_sha: r.get(7)?,
+                    date: r.get(8)?,
+                    scope: r.get(9)?,
+                    superseded_by: r.get(10)?,
+                    valid_from: r.get(11)?,
+                    valid_until: r.get(12)?,
+                    updated_at: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+                    access_count: r.get(14)?,
+                    effectiveness: r.get(15)?,
+                    embedding: None,
+                })
+            })
             .optional()?)
+    }
+
+    /// Walk the supersession chain forward from `id` — `[id, superseded_by(id), superseded_by(...)…]`
+    /// until a record with no successor. Returns at most `cap` records; an unknown id yields empty.
+    pub fn supersession_chain(&self, id: &str, cap: usize) -> Result<Vec<Record>> {
+        let mut out = Vec::new();
+        let mut cursor = id.to_string();
+        let mut seen = std::collections::HashSet::new();
+        while out.len() < cap && seen.insert(cursor.clone()) {
+            match self.get_record_any(&cursor, true)? {
+                Some(rec) => {
+                    let next = rec.superseded_by.clone();
+                    out.push(rec);
+                    match next {
+                        Some(n) if !n.is_empty() => cursor = n,
+                        _ => break,
+                    }
+                }
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     pub fn link_git(&self, decision_id: &str, commit_hash: &str, commit_subject: &str) -> Result<()> {
@@ -1186,5 +1230,28 @@ mod tests {
         assert!((eff - 0.52).abs() < 1e-9, "expected 0.52, got {eff}");
         // Unknown id returns None and records nothing.
         assert!(store.feedback("no-such-id", true).unwrap().is_none());
+    }
+
+    #[test]
+    fn historical_mode_surfaces_supersession_chain() {
+        let store = temp_store();
+        store
+            .capture_external(&decision("database choice", "sqlite", 0.5, None), "global", "aaa", None, None, None)
+            .unwrap();
+        store
+            .capture_external(&decision("database choice v2", "postgres now", 0.5, None), "global", "bbb", None, None, Some("aaa"))
+            .unwrap();
+        // Active search returns only the current (non-superseded) record.
+        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subject, "database choice v2");
+        // Historical search returns both.
+        let hits = store.search_records_with("sqlite postgres", &["global"], &[], 10, true).unwrap();
+        assert_eq!(hits.len(), 2);
+        // The chain walks aaa -> bbb.
+        let chain = store.supersession_chain("aaa", 20).unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].id, "aaa");
+        assert_eq!(chain[1].id, "bbb");
     }
 }

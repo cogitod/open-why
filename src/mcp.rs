@@ -1,4 +1,4 @@
-use crate::answer::{ask, render};
+use crate::answer::{ask, render, render_records};
 use crate::{db, miner, store};
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -126,6 +126,7 @@ pub fn serve() -> Result<()> {
                                     "limit": {"type": "number", "description": "default 10"},
                                     "scope": {"type": "string", "description": "default: global"},
                                     "type": {"type": ["string", "array"], "description": "optional kind facet (decision/fact/reference/project/pattern/doc/observation; comma-separated string or array)"},
+                                    "historical": {"type": "boolean", "description": "include superseded decisions (default false)"},
                                     "format": {"type": "string", "description": "text (default) or json (structured records with ids and temporal windows)"}
                                 }),
                                 &["query"]),
@@ -133,6 +134,7 @@ pub fn serve() -> Result<()> {
                                 "Fetch one decision by id, with its linked commits.",
                                 json!({
                                     "id": {"type": "string"},
+                                    "historical": {"type": "boolean", "description": "reach past supersession and return the full chain"},
                                     "format": {"type": "string", "description": "text (default) or json (structured record with temporal window)"}
                                 }),
                                 &["id"]),
@@ -265,9 +267,15 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
             let kinds = kinds_from(args);
+            let historical = args.get("historical").and_then(|v| v.as_bool()).unwrap_or(false);
             if s(args, "format").as_deref() == Some("json") {
-                match store.search_records(&query, &[scope.as_str()], &kinds, limit) {
+                match store.search_records_with(&query, &[scope.as_str()], &kinds, limit, historical) {
                     Ok(records) => serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}")),
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else if historical {
+                match store.search_records_with(&query, &[scope.as_str()], &kinds, limit, true) {
+                    Ok(records) => render_records(records),
                     Err(e) => format!("error: {e:#}"),
                 }
             } else {
@@ -279,7 +287,13 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
         }
         "open-why_get" => {
             let id = s(args, "id").unwrap_or_default();
-            if s(args, "format").as_deref() == Some("json") {
+            let historical = args.get("historical").and_then(|v| v.as_bool()).unwrap_or(false);
+            if historical {
+                match store.supersession_chain(&id, 20) {
+                    Ok(chain) => serde_json::to_string(&chain).unwrap_or_else(|e| format!("error: {e}")),
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else if s(args, "format").as_deref() == Some("json") {
                 match store.get_record(&id) {
                     Ok(Some(r)) => serde_json::to_string(&r).unwrap_or_else(|e| format!("error: {e}")),
                     Ok(None) => "null".to_string(),
