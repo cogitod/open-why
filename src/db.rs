@@ -1,4 +1,4 @@
-use crate::store::{Decision, ExternalDecision};
+use crate::store::{Decision, ExternalDecision, Record};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -267,6 +267,75 @@ impl Store {
         Ok(out)
     }
 
+    /// Search active decisions across scopes and return full records (id + temporal
+    /// window) in hybrid-ranked order. Structured counterpart of `search`.
+    pub fn search_records(&self, query: &str, scopes: &[&str], limit: usize) -> Result<Vec<Record>> {
+        if scopes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; scopes.len()].join(",");
+        let sql = format!(
+            "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                    superseded_by,valid_from,valid_until
+             FROM decisions
+             WHERE superseded_by IS NULL AND valid_until IS NULL
+               AND scope IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let scope_params: Vec<&dyn rusqlite::ToSql> = scopes.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(scope_params.as_slice(), |r| {
+            Ok(Record {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                title: r.get(2)?,
+                content: r.get(3)?,
+                importance: r.get(4)?,
+                source: r.get(5)?,
+                author: r.get(6)?,
+                commit_sha: r.get(7)?,
+                date: r.get(8)?,
+                scope: r.get(9)?,
+                superseded_by: r.get(10)?,
+                valid_from: r.get(11)?,
+                valid_until: r.get(12)?,
+            })
+        })?;
+        let mut all = Vec::new();
+        for row in rows {
+            all.push(row?);
+        }
+        Ok(rank_by(query, all, now_epoch(), limit, |d| (&d.title, &d.content, d.importance, &d.date, &d.kind)))
+    }
+
+    pub fn get_record(&self, id: &str) -> Result<Option<Record>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                        superseded_by,valid_from,valid_until
+                 FROM decisions WHERE id=?1 AND superseded_by IS NULL",
+                params![id],
+                |r| {
+                    Ok(Record {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        title: r.get(2)?,
+                        content: r.get(3)?,
+                        importance: r.get(4)?,
+                        source: r.get(5)?,
+                        author: r.get(6)?,
+                        commit_sha: r.get(7)?,
+                        date: r.get(8)?,
+                        scope: r.get(9)?,
+                        superseded_by: r.get(10)?,
+                        valid_from: r.get(11)?,
+                        valid_until: r.get(12)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn link_git(&self, decision_id: &str, commit_hash: &str, commit_subject: &str) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO decision_git_refs (decision_id, commit_hash, commit_subject)
@@ -327,19 +396,30 @@ impl Store {
 /// embeddings land in P2. Decisions decay with a 2-day half-life (point-in-time),
 /// everything else 7 days.
 fn rank(query: &str, rows: Vec<Decision>, now: i64, limit: usize) -> Vec<Decision> {
+    rank_by(query, rows, now, limit, |d| (&d.subject, &d.body, d.importance, &d.date, &d.kind))
+}
+
+fn rank_by<T>(
+    query: &str,
+    rows: Vec<T>,
+    now: i64,
+    limit: usize,
+    fields: impl Fn(&T) -> (&str, &str, f64, &str, &str),
+) -> Vec<T> {
     let words = crate::search::tokenize(query);
-    let mut scored: Vec<(f64, Decision)> = rows
+    let mut scored: Vec<(f64, T)> = rows
         .into_iter()
         .filter_map(|d| {
-            let lex = crate::search::score(&words, &d.subject, &d.body) as f64;
+            let (subject, body, importance, date, kind) = fields(&d);
+            let lex = crate::search::score(&words, subject, body) as f64;
             if lex <= 0.0 {
                 return None;
             }
             let sim = lex / (lex + 10.0);
-            let mut s = 0.65 * sim + 0.25 * d.importance;
-            if let Some(epoch) = iso_to_epoch(&d.date) {
+            let mut s = 0.65 * sim + 0.25 * importance;
+            if let Some(epoch) = iso_to_epoch(date) {
                 let age_days = ((now - epoch) as f64 / 86_400.0).max(0.0);
-                let half_life = if d.kind == "decision" { 2.0 } else { 7.0 };
+                let half_life = if kind == "decision" { 2.0 } else { 7.0 };
                 s *= 2.0f64.powf(-age_days / half_life);
             }
             Some((s, d))

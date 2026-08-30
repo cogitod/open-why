@@ -52,6 +52,26 @@ pub struct GitRef {
     pub commit_subject: String,
 }
 
+/// A full decision record as returned to a client, including its id and temporal
+/// window. Mirrors the `decisions` table so a consumer (cogitod) can round-trip a
+/// record exactly, not just its text.
+#[derive(Debug, Clone, Serialize)]
+pub struct Record {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub content: String,
+    pub importance: f64,
+    pub source: String,
+    pub author: String,
+    pub date: String,
+    pub commit_sha: String,
+    pub scope: String,
+    pub superseded_by: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+}
+
 /// A decision imported with an externally-minted id (e.g. a cogitod memory UUID).
 /// Carries the full temporal window (`valid_from`/`valid_until`), supersession, and
 /// git linkage so an importer can reproduce a decision exactly, not just its text.

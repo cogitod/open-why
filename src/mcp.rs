@@ -102,13 +102,15 @@ pub fn serve() -> Result<()> {
                                 json!({
                                     "query": {"type": "string"},
                                     "limit": {"type": "number", "description": "default 10"},
-                                    "scope": {"type": "string", "description": "default: global"}
+                                    "scope": {"type": "string", "description": "default: global"},
+                                    "format": {"type": "string", "description": "text (default) or json (structured records with ids and temporal windows)"}
                                 }),
                                 &["query"]),
                             tool("openwhy_get",
                                 "Fetch one decision by id, with its linked commits.",
                                 json!({
-                                    "id": {"type": "string"}
+                                    "id": {"type": "string"},
+                                    "format": {"type": "string", "description": "text (default) or json (structured record with temporal window)"}
                                 }),
                                 &["id"]),
                             tool("openwhy_link",
@@ -230,28 +232,43 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let query = s(args, "query").unwrap_or_default();
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
-            match store.search(&query, &[scope.as_str()], limit) {
-                Ok(hits) => render(hits),
-                Err(e) => format!("error: {e:#}"),
+            if s(args, "format").as_deref() == Some("json") {
+                match store.search_records(&query, &[scope.as_str()], limit) {
+                    Ok(records) => serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}")),
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else {
+                match store.search(&query, &[scope.as_str()], limit) {
+                    Ok(hits) => render(hits),
+                    Err(e) => format!("error: {e:#}"),
+                }
             }
         }
         "openwhy_get" => {
             let id = s(args, "id").unwrap_or_default();
-            match store.get(&id) {
-                Ok(Some(d)) => {
-                    let mut t = format!("- {}\n  {} · {} · {}\n  {}", d.subject, d.date, d.author, d.source, d.body);
-                    if let Ok(commits) = store.linked_commits(&id) {
-                        if !commits.is_empty() {
-                            t.push_str("\n\n  linked commits:");
-                            for (hash, subj) in commits {
-                                t.push_str(&format!("\n    {} {subj}", &hash[..hash.len().min(8)]));
+            if s(args, "format").as_deref() == Some("json") {
+                match store.get_record(&id) {
+                    Ok(Some(r)) => serde_json::to_string(&r).unwrap_or_else(|e| format!("error: {e}")),
+                    Ok(None) => "null".to_string(),
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else {
+                match store.get(&id) {
+                    Ok(Some(d)) => {
+                        let mut t = format!("- {}\n  {} · {} · {}\n  {}", d.subject, d.date, d.author, d.source, d.body);
+                        if let Ok(commits) = store.linked_commits(&id) {
+                            if !commits.is_empty() {
+                                t.push_str("\n\n  linked commits:");
+                                for (hash, subj) in commits {
+                                    t.push_str(&format!("\n    {} {subj}", &hash[..hash.len().min(8)]));
+                                }
                             }
                         }
+                        t
                     }
-                    t
+                    Ok(None) => format!("no active decision with id {id}"),
+                    Err(e) => format!("error: {e:#}"),
                 }
-                Ok(None) => format!("no active decision with id {id}"),
-                Err(e) => format!("error: {e:#}"),
             }
         }
         "openwhy_link" => {
