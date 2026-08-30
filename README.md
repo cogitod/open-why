@@ -64,18 +64,26 @@ Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
 ## Quick start
 
 ```bash
-# ask "why" — one word, no prefix
+# ask "why" — one word, no prefix. Bare `why "..."` asks; no subcommand needed.
 why "why is the sandbox separate?" --repo https://github.com/anomalyco/opencode
-
-# index the current repo explicitly
-open-why init
 
 # ask a question of the current repo
 why "why do we use SQLite instead of Postgres?"
+
+# index a repo explicitly
+why init
+
+# the rest of the surface
+why capture --title "Use SQLite" --content "..." --kind decision
+why search "sqlite" --types decision,fact
+why get <id>
+why link <commit> <decision>
+why import --file decisions.json
+why serve          # MCP stdio
 ```
 
-`why` is a thin alias for `open-why why` — same engine, less typing. The full CLI
-(`open-why`) also exposes `capture`, `search`, `get`, `import`, and `serve`.
+`why` is the only binary. The full verb set is `ask` (bare), `init`, `capture`,
+`search`, `get`, `link`, `import`, `fetch-model`, and `serve`.
 
 Every answer is evidence-bound:
 
@@ -99,20 +107,28 @@ for h in hits {
 }
 ```
 
-Semantic recall is on when an embedder is configured; off, search is lexical-first:
+Semantic recall is on when an embedder is configured; off, search is lexical-first.
+
+No embedder configured and want zero-config local embeddings? Fetch the model once,
+then open-why finds it automatically:
+
+```bash
+why fetch-model    # downloads Xenova/all-MiniLM-L6-v2 into ~/.cache/open-why/models
+```
 
 | Env | Effect |
 | --- | --- |
 | `OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2` | local on-device embedder |
+| `OPEN_WHY_AUTO_FETCH=1` | download the model on first use if missing |
 | `OPEN_WHY_EMBED_URL` (+ `OPEN_WHY_EMBED_MODEL`, `OPEN_WHY_EMBED_API_KEY`) | OpenAI-compatible remote |
-| *(unset)* | lexical-first |
+| *(none of the above)* | local model from the cache if fetched, else lexical-first |
 
 The public surface is `Store`, `Decision`, `Record`, `ExternalDecision`, and the
 `Embedder` trait (`LocalEmbedder`, `HttpEmbedder`).
 
 ## Use as an MCP server
 
-`open-why serve` speaks stdio MCP and exposes `open-why_ask`, `open-why_index`,
+`why serve` speaks stdio MCP and exposes `open-why_ask`, `open-why_index`,
 `open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`, and
 `open-why_link`.
 
@@ -121,7 +137,7 @@ opencode (`~/.config/opencode/opencode.jsonc`):
 ```jsonc
 "open-why": {
   "type": "local",
-  "command": ["/path/to/open-why/target/release/open-why", "serve"],
+  "command": ["/path/to/open-why/target/release/why", "serve"],
   "enabled": true
 }
 ```
@@ -129,7 +145,7 @@ opencode (`~/.config/opencode/opencode.jsonc`):
 Claude Code / Codex (`.mcp.json` / `claude mcp add`):
 
 ```json
-{ "mcpServers": { "open-why": { "command": "/path/to/open-why/target/release/open-why", "args": ["serve"] } } }
+{ "mcpServers": { "open-why": { "command": "/path/to/open-why/target/release/why", "args": ["serve"] } } }
 ```
 
 ## Build
@@ -139,8 +155,9 @@ cargo build --release
 ```
 
 Requires Rust 1.88+. The first build downloads the onnxruntime runtime for your
-platform (via `ort`'s `download-binaries`). The embedding model is loaded from
-`OPEN_WHY_EMBED_MODEL_PATH` at runtime, not vendored.
+platform (via `ort`'s `download-binaries`). The embedding model is fetched with
+`why fetch-model` (or loaded from `OPEN_WHY_EMBED_MODEL_PATH` at runtime), not
+vendored.
 
 ## License
 
