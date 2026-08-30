@@ -64,15 +64,18 @@ Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
 ## Quick start
 
 ```bash
-# answer "why" on any repo — no setup needed
-open-why why "why is the sandbox separate?" --repo https://github.com/anomalyco/opencode
+# ask "why" — one word, no prefix
+why "why is the sandbox separate?" --repo https://github.com/anomalyco/opencode
 
 # index the current repo explicitly
 open-why init
 
 # ask a question of the current repo
-open-why why "why do we use SQLite instead of Postgres?"
+why "why do we use SQLite instead of Postgres?"
 ```
+
+`why` is a thin alias for `open-why why` — same engine, less typing. The full CLI
+(`open-why`) also exposes `capture`, `search`, `get`, `import`, and `serve`.
 
 Every answer is evidence-bound:
 
