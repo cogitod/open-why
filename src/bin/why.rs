@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use open_why::{answer, db, embed, mcp, miner, store};
+use open_why::{answer, db, embed, mcp, miner, store, RankExplanation, Record};
 
 /// Ask why a decision was made — with the evidence.
 #[derive(Parser)]
@@ -70,6 +70,12 @@ enum Command {
         /// Include superseded decisions (historical mode)
         #[arg(long)]
         historical: bool,
+        /// Show per-result ranking components (similarity, importance, recency, RRF)
+        #[arg(long)]
+        explain: bool,
+        /// Also show near-miss candidates that just missed the top-N
+        #[arg(long)]
+        explain_drops: bool,
     },
     /// Fetch one decision by id
     Get {
@@ -152,10 +158,20 @@ fn main() -> Result<()> {
                 println!("captured decision {id} (scope: {scope})");
                 Ok(())
             }
-            Command::Search { query, limit, scope, types, historical } => {
+            Command::Search { query, limit, scope, types, historical, explain, explain_drops } => {
                 let store = db::Store::open_default()?;
                 let scope = scope.unwrap_or_else(|| "global".to_string());
-                if historical {
+                if explain_drops {
+                    let (results, drops) = store.search_records_drops(&query, &[scope.as_str()], &types, limit, historical, 5)?;
+                    print!("{}", render_explain(results, true));
+                    if !drops.is_empty() {
+                        println!("--- near-miss (did not make the top-N) ---");
+                        print!("{}", render_explain(drops, true));
+                    }
+                } else if explain {
+                    let hits = store.search_records_explain(&query, &[scope.as_str()], &types, limit, historical)?;
+                    print!("{}", render_explain(hits, false));
+                } else if historical {
                     let hits = store.search_records_with(&query, &[scope.as_str()], &types, limit, true)?;
                     print!("{}", answer::render_records(hits));
                 } else {
@@ -257,4 +273,29 @@ fn ask_bare(cli: &Cli) -> Result<()> {
     let repo = miner::resolve_repo(cli.repo.clone())?;
     print!("{}", answer::ask(&question, &repo, cli.limit)?);
     Ok(())
+}
+
+/// Render records with their ranking explanation. `numbered` adds the final rank position, used
+/// to show near-miss drops relative to the kept results.
+fn render_explain(pairs: Vec<(Record, RankExplanation)>, numbered: bool) -> String {
+    let mut out = String::new();
+    for (idx, (r, e)) in pairs.into_iter().enumerate() {
+        let prefix = if numbered { format!("#{} ", idx + 1) } else { String::new() };
+        out.push_str(&format!("- {}{}\n", prefix, r.title));
+        out.push_str(&format!("  {} · {} · {}\n", r.date, r.author, r.source));
+        let sem = e
+            .semantic_rank
+            .map(|r| format!("sem#{r}"))
+            .unwrap_or_else(|| "sem—".to_string());
+        let lex = e
+            .lexical_rank
+            .map(|r| format!("lex#{r}"))
+            .unwrap_or_else(|| "lex—".to_string());
+        out.push_str(&format!(
+            "  sim={:.3} imp={:.2} eff={:.2} age={:.0}d dec={:.2} hyb={:.3} {sem} {lex} rrf={:.4}\n",
+            e.similarity, e.importance, e.effectiveness, e.age_days, e.recency_decay, e.hybrid_score, e.rrf_score
+        ));
+        out.push('\n');
+    }
+    out.trim_end().to_string()
 }

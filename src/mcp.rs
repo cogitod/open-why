@@ -127,6 +127,8 @@ pub fn serve() -> Result<()> {
                                     "scope": {"type": "string", "description": "default: global"},
                                     "type": {"type": ["string", "array"], "description": "optional kind facet (decision/fact/reference/project/pattern/doc/observation; comma-separated string or array)"},
                                     "historical": {"type": "boolean", "description": "include superseded decisions (default false)"},
+                                    "explain": {"type": "boolean", "description": "attach per-result ranking components (similarity, importance, recency decay, RRF)"},
+                                    "explain_drops": {"type": "boolean", "description": "also return near-miss candidates that missed the top-N"},
                                     "format": {"type": "string", "description": "text (default) or json (structured records with ids and temporal windows)"}
                                 }),
                                 &["query"]),
@@ -268,7 +270,31 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
             let kinds = kinds_from(args);
             let historical = args.get("historical").and_then(|v| v.as_bool()).unwrap_or(false);
-            if s(args, "format").as_deref() == Some("json") {
+            let explain = args.get("explain").and_then(|v| v.as_bool()).unwrap_or(false);
+            let explain_drops = args.get("explain_drops").and_then(|v| v.as_bool()).unwrap_or(false);
+            if explain_drops {
+                match store.search_records_drops(&query, &[scope.as_str()], &kinds, limit, historical, 5) {
+                    Ok((results, drops)) => {
+                        let explain_vec = |v: Vec<(crate::store::Record, crate::db::RankExplanation)>| -> Vec<Value> {
+                            v.into_iter().map(|(r, e)| json!({"record": r, "explain": e})).collect()
+                        };
+                        serde_json::to_string(&json!({"results": explain_vec(results), "drops": explain_vec(drops)}))
+                            .unwrap_or_else(|e| format!("error: {e}"))
+                    }
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else if explain {
+                match store.search_records_explain(&query, &[scope.as_str()], &kinds, limit, historical) {
+                    Ok(pairs) => {
+                        let explained: Vec<Value> = pairs
+                            .into_iter()
+                            .map(|(r, e)| json!({"record": r, "explain": e}))
+                            .collect();
+                        serde_json::to_string(&explained).unwrap_or_else(|e| format!("error: {e}"))
+                    }
+                    Err(e) => format!("error: {e:#}"),
+                }
+            } else if s(args, "format").as_deref() == Some("json") {
                 match store.search_records_with(&query, &[scope.as_str()], &kinds, limit, historical) {
                     Ok(records) => serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}")),
                     Err(e) => format!("error: {e:#}"),

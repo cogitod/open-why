@@ -544,8 +544,28 @@ impl Store {
     /// `search_records` with supersession control. With `include_superseded`, retired decisions
     /// surface too and carry their `superseded_by` / `valid_until` so a caller can follow the chain.
     pub fn search_records_with(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<Record>> {
+        Ok(self.rank_records(query, scopes, kinds, limit, include_superseded)?.0)
+    }
+
+    /// `search_records_with` returning per-result ranking explanations alongside.
+    pub fn search_records_explain(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<(Record, RankExplanation)>> {
+        let (records, explanations) = self.rank_records(query, scopes, kinds, limit, include_superseded)?;
+        Ok(records.into_iter().zip(explanations).collect())
+    }
+
+    /// Search and split into `(results, drops)`: the top `limit` and the next `drop_count`
+    /// near-miss candidates, each with its ranking explanation. The drops are the candidates
+    /// that fused but lost the top-N slice — "what didn't make it, and by how much".
+    pub fn search_records_drops(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool, drop_count: usize) -> Result<(Vec<(Record, RankExplanation)>, Vec<(Record, RankExplanation)>)> {
+        let (records, explanations) = self.rank_records(query, scopes, kinds, limit + drop_count, include_superseded)?;
+        let pairs: Vec<(Record, RankExplanation)> = records.into_iter().zip(explanations).collect();
+        let (results, drops) = pairs.split_at(pairs.len().min(limit));
+        Ok((results.to_vec(), drops.to_vec()))
+    }
+
+    fn rank_records(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<(Vec<Record>, Vec<RankExplanation>)> {
         if scopes.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let (rows, rowids) = self.select_records(scopes, kinds, include_superseded)?;
         let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
@@ -830,6 +850,20 @@ struct RankRow<'a> {
     embedding: Option<&'a [f32]>,
 }
 
+/// Per-result ranking explanation — why a row ranked where it did. Exposed by `--explain`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RankExplanation {
+    pub similarity: f64,
+    pub importance: f64,
+    pub effectiveness: f64,
+    pub age_days: f64,
+    pub recency_decay: f64,
+    pub hybrid_score: f64,
+    pub semantic_rank: Option<usize>,
+    pub lexical_rank: Option<usize>,
+    pub rrf_score: f64,
+}
+
 /// Hybrid rerank matching cogitod's `searchMemoriesHybrid`: reciprocal-rank fusion of a
 /// semantic arm (sorted by hybrid score) and a lexical arm (the FTS5 `bm25()` order supplied by
 /// the caller, already narrow-then-broad), then slice. Recency enters through the semantic arm's
@@ -845,6 +879,7 @@ fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, lexic
         effectiveness: d.effectiveness,
         embedding: d.embedding.as_deref(),
     })
+    .0
 }
 
 fn rank_by<T>(
@@ -855,7 +890,7 @@ fn rank_by<T>(
     now: i64,
     limit: usize,
     fields: impl Fn(&T) -> RankRow<'_>,
-) -> Vec<T> {
+) -> (Vec<T>, Vec<RankExplanation>) {
     let recency_mult = recency_weight_for(query);
 
     // Semantic score capsule. The lexical arm is the native FTS5 bm25() order supplied by the
@@ -937,11 +972,15 @@ fn rank_by<T>(
 
     // Reciprocal rank fusion.
     let mut scores = vec![0.0f64; n];
+    let mut semantic_rank: Vec<Option<usize>> = vec![None; n];
+    let mut lexical_rank: Vec<Option<usize>> = vec![None; n];
     for (rank, &i) in semantic_order.iter().enumerate() {
         scores[i] += 1.0 / (RRF_K + rank as f64 + 1.0);
+        semantic_rank[i] = Some(rank);
     }
     for (rank, &i) in lexical_order.iter().enumerate() {
         scores[i] += BM25_WEIGHT / (RRF_K + rank as f64 + 1.0);
+        lexical_rank[i] = Some(rank);
     }
 
     if std::env::var("OPEN_WHY_DEBUG_RANK").is_ok() {
@@ -976,12 +1015,27 @@ fn rank_by<T>(
 
     let mut row_vec: Vec<Option<T>> = rows.into_iter().map(Some).collect();
     let mut out = Vec::with_capacity(order.len());
+    let mut explanations = Vec::with_capacity(order.len());
     for i in order {
         if let Some(r) = row_vec[i].take() {
+            let c = &capsules[i];
+            let stability = c.half_life * (1.0 + (1.0 + c.access_count as f64).ln());
+            let decay = recency_decay(c.age_days, stability);
             out.push(r);
+            explanations.push(RankExplanation {
+                similarity: c.sim,
+                importance: c.importance,
+                effectiveness: c.effectiveness,
+                age_days: c.age_days,
+                recency_decay: decay,
+                hybrid_score: hybrid(c),
+                semantic_rank: semantic_rank[i],
+                lexical_rank: lexical_rank[i],
+                rrf_score: scores[i],
+            });
         }
     }
-    out
+    (out, explanations)
 }
 
 fn parse_embedding(raw: Option<String>) -> Option<Vec<f32>> {
@@ -1253,5 +1307,23 @@ mod tests {
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].id, "aaa");
         assert_eq!(chain[1].id, "bbb");
+    }
+
+    #[test]
+    fn explain_reports_components_and_drops() {
+        let store = temp_store();
+        for i in 0..3 {
+            store
+                .capture(&decision(&format!("sqlite postgres {i}"), "both terms", 0.5, None), "global", None)
+                .unwrap();
+        }
+        let explained = store.search_records_explain("sqlite postgres", &["global"], &[], 3, false).unwrap();
+        assert_eq!(explained.len(), 3);
+        assert!(explained.iter().all(|(_, e)| e.lexical_rank.is_some()));
+        assert!(explained.iter().all(|(_, e)| e.semantic_rank.is_none()));
+        assert!(explained.iter().all(|(_, e)| e.rrf_score > 0.0));
+        let (results, drops) = store.search_records_drops("sqlite postgres", &["global"], &[], 1, false, 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(drops.len(), 2);
     }
 }
