@@ -676,6 +676,7 @@ fn rank_by<T>(
         half_life: f64,
         access_count: i64,
         effectiveness: f64,
+        all_terms: bool,
     }
     let has_query_emb = query_embedding.is_some();
     let capsules: Vec<Option<Capsule>> = rows
@@ -684,6 +685,11 @@ fn rank_by<T>(
             let f = fields(d);
             let subject = f.subject.to_lowercase();
             let body = f.body.to_lowercase();
+            // Every distinct query term appears in the searchable text — the "narrow"
+            // (all-terms) arm of cogitod's narrow-then-broad heuristic.
+            let all_terms = words
+                .iter()
+                .all(|w| contains_word(&subject, w) || contains_word(&body, w));
             // Unweighted overlap for the lexical proxy and the no-signal check.
             let lex_raw = crate::search::score(&words, f.subject, f.body) as f64;
             // BM25 with column weights (title ×10, content ×5) and length normalisation,
@@ -725,6 +731,7 @@ fn rank_by<T>(
                 half_life,
                 access_count: f.access_count,
                 effectiveness: f.effectiveness,
+                all_terms,
             })
         })
         .collect();
@@ -772,8 +779,21 @@ fn rank_by<T>(
         Vec::new()
     };
 
-    // Lexical arm: sort by idf-weighted term-overlap, descending; tiebreak on similarity.
-    let mut lexical_order = live.clone();
+    // Lexical arm, mirroring cogitod's narrow-then-broad heuristic: for a multi-term query,
+    // prefer the all-terms match when it yields enough rows (>= min(limit, 5)); otherwise
+    // broaden to any-term. Sort by idf-weighted BM25, descending; tiebreak on similarity.
+    let narrow_floor = limit.min(5);
+    let full: Vec<usize> = live
+        .iter()
+        .copied()
+        .filter(|&i| capsules[i].as_ref().unwrap().all_terms)
+        .collect();
+    let lexical_pool: Vec<usize> = if words.len() > 1 && full.len() >= narrow_floor {
+        full
+    } else {
+        live.clone()
+    };
+    let mut lexical_order = lexical_pool;
     lexical_order.sort_by(|&a, &b| {
         let ca = capsules[a].as_ref().unwrap();
         let cb = capsules[b].as_ref().unwrap();
@@ -1015,5 +1035,31 @@ mod tests {
         assert!((recency_weight_for("the latest lane policy") - RECENCY_BOOST).abs() < 1e-9);
         assert!((recency_weight_for("how it used to work") - RECENCY_SUPPRESS).abs() < 1e-9);
         assert!((recency_weight_for("worktree corruption") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn narrow_then_broad_prefers_all_terms_match() {
+        // Six rows: five match both query terms, one matches only "sqlite" (repeated, so
+        // its raw BM25 term frequency is high). With >=5 all-term rows, the narrow arm wins
+        // and the partial-match row is excluded from the lexical arm, sinking below them.
+        let mut rows: Vec<Decision> = (0..5)
+            .map(|i| decision(&format!("sqlite postgres {i}"), "both terms", 0.5, None))
+            .collect();
+        rows.push(decision("sqlite sqlite sqlite sqlite", "no postgres here", 0.5, None));
+        let ranked = rank("sqlite postgres", None, rows, 1700000000, 10);
+        assert_eq!(ranked.len(), 6);
+        assert_eq!(ranked[5].subject, "sqlite sqlite sqlite sqlite");
+    }
+
+    #[test]
+    fn narrow_then_broad_falls_back_when_few_all_term_rows() {
+        // Only one row matches both terms (fewer than the narrow floor), so the lexical
+        // arm broadens to any-term and a partial-match row can still surface.
+        let rows = vec![
+            decision("sqlite postgres", "both", 0.5, None),
+            decision("sqlite", "only one term", 0.5, None),
+        ];
+        let ranked = rank("sqlite postgres", None, rows, 1700000000, 10);
+        assert_eq!(ranked.len(), 2);
     }
 }

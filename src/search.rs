@@ -1,10 +1,16 @@
 pub(crate) fn tokenize(question: &str) -> Vec<String> {
-    question
+    let mut seen = Vec::new();
+    for w in question
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .filter(|w| !is_stopword(w))
-        .collect()
+    {
+        if !seen.contains(&w) {
+            seen.push(w);
+        }
+    }
+    seen
 }
 
 /// Lexical term-overlap score: a subject hit is worth 5, a body hit 1.
