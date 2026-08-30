@@ -1,13 +1,6 @@
-mod answer;
-mod db;
-mod embed;
-mod mcp;
-mod miner;
-mod search;
-mod store;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use open_why::{answer, db, mcp, miner, store};
 
 #[derive(Parser)]
 #[command(name = "open-why", version, about = "Ask any repository why a decision was made — with the evidence.")]

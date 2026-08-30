@@ -1,33 +1,65 @@
 # open-why
 
-**Ask any repository why a decision was made — with the evidence.**
+**The thin "why" layer for AI agents.**
 
 `git blame` tells you *who* changed a line and *when*. `open-why` tells you *why* —
-the commit, the ADR, the author, and the rationale — as a cited answer.
+the commit, the ADR, the author, the rationale — as a cited answer.
 
-## Where open-why sits
+open-why is a small, self-contained Rust crate: one local SQLite store, a retrieval
+engine (local embeddings + BM25 + recency), and an MCP server. It does one thing,
+and it does not grow.
 
-The open-source AI-agent stack is filling in every layer except the memory:
+## The idea
 
-| Layer | Project | Job |
-| --- | --- | --- |
-| Agent | [OpenHands](https://github.com/OpenHands/openhands) | do the work |
-| Harness | [opencode](https://github.com/anomalyco/opencode) | run the agent |
-| TUI | [opentui](https://github.com/anomalyco/opentui) | see the agent |
-| Runtime | [herdr](https://herdr.dev) | where the agent lives |
-| Connectors | [open-connector](https://github.com/oomol-lab/open-connector) | reach the apps |
-| **Memory** | **open-why** | **remember why** ← the missing layer |
+Agents are good at *doing*. They are bad at *remembering why*.
 
-They all make agents *do*. None of them makes an agent (or you) *remember why*.
+Every time an agent (or a team) makes a consequential choice, the reasoning behind
+it lives in a PR comment, a chat thread, or someone's head — and evaporates. Six
+months later you are staring at a line of code asking "why is this here?" and the
+only honest answer left is `git blame`, which tells you *who* and *when*, never
+*why*.
 
-## Not another memory layer
+open-why exists to make "why" a first-class, machine-retrievable thing. It captures
+the decision, binds it to the commits that realized it, and recalls it on demand —
+with the evidence attached, so the answer can be checked rather than trusted.
 
-Agent memory is the most crowded corner of the open stack — Mem0 (64k★),
-Zep Graphiti (30k★), Letta (24k★), Hindsight (21k★) all remember **what**
-happened. open-why is deliberately narrow: it remembers **why**, and cites the
-evidence (the commit, the ADR, the decision record) so you can trust the answer.
+## The thought behind the design
 
-> Mem0 and Graphiti remember *what*. open-why remembers *why* — with the proof.
+A few convictions shape every part of open-why:
+
+- **Narrow, not general.** open-why is not a memory platform. It does decision
+  recall. Doing one thing well is the feature.
+- **Evidence-bound, not a guess.** An answer without proof is an opinion. open-why
+  returns the source — the commit, the record, the author, the date — alongside
+  every result.
+- **Superseded, never deleted.** Decisions are point-in-time. A newer decision on
+  the same question retires the older one; the history stays, the *current* answer
+  is always what you get. The past is never lost, and never mistaken for the
+  present.
+- **Local and customer-owned.** One SQLite file on your machine. No service, no
+  cloud, no account. Your reasons are yours.
+- **Calibrated, not tuned.** The ranking is ported from a production retrieval
+  engine and kept to its measured constants. It is reproduced, not improvised.
+
+## What it does
+
+Four primitives, each small and composable:
+
+- **Decision linkage** — a commit's `mem-ref:` trailers bind it to the decision it
+  realizes. Ask which decisions a commit realizes, or which commits realized a
+  decision.
+- **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
+  hydrates the *current* version; history stays reachable.
+- **Hybrid recall** — reciprocal-rank fusion of a **semantic arm** (local on-device
+  `all-MiniLM-L6-v2` embeddings) and a **lexical arm** (FTS5-style BM25 with
+  title/content column weights), weighted by importance and effectiveness and
+  decayed by Ebbinghaus recency — with spaced-repetition stability, so a memory
+  that keeps being the right answer stays findable.
+- **Capture provenance** — `content_digest` + `source_identity` make capture
+  idempotent and de-duplicated by content.
+
+Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
+`project`, `observation` — so recall can be scoped by type as well as by query.
 
 ## Quick start
 
@@ -42,9 +74,7 @@ open-why init
 open-why why "why do we use SQLite instead of Postgres?"
 ```
 
-## What you get
-
-Every answer is evidence-bound, not a guess:
+Every answer is evidence-bound:
 
 ```
 - Use SQLite for the local-first record
@@ -52,20 +82,36 @@ Every answer is evidence-bound, not a guess:
   zero-config, single file, survives a laptop
 ```
 
-## How it works
+## Use as a library
 
-1. `init` walks git history + ADRs + design docs and extracts decisions into a
-   local SQLite store (`~/.cache/open-why/open-why.db`).
-2. `why` hybrid-ranks them (lexical + importance + recency decay) and cites the
-   source.
-3. `capture`, `search`, `get`, and `link` record and recall decisions beyond git.
+`open-why` is a lib + bin crate. Embed the store directly:
 
-On the roadmap: on-device embeddings (semantic ranking).
+```rust
+use open_why::Store;
+
+let store = Store::open_default()?;                 // wires an embedder from the env
+let hits = store.search("why sqlite", &["my-project"], &[], 10)?;
+for h in hits {
+    println!("{} — {}", h.subject, h.date);
+}
+```
+
+Semantic recall is on when an embedder is configured; off, search is lexical-first:
+
+| Env | Effect |
+| --- | --- |
+| `OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2` | local on-device embedder |
+| `OPEN_WHY_EMBED_URL` (+ `OPEN_WHY_EMBED_MODEL`, `OPEN_WHY_EMBED_API_KEY`) | OpenAI-compatible remote |
+| *(unset)* | lexical-first |
+
+The public surface is `Store`, `Decision`, `Record`, `ExternalDecision`, and the
+`Embedder` trait (`LocalEmbedder`, `HttpEmbedder`).
 
 ## Use as an MCP server
 
 `open-why serve` speaks stdio MCP and exposes `open-why_ask`, `open-why_index`,
-`open-why_capture`, `open-why_search`, `open-why_get`, and `open-why_link`.
+`open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`, and
+`open-why_link`.
 
 opencode (`~/.config/opencode/opencode.jsonc`):
 
@@ -82,6 +128,16 @@ Claude Code / Codex (`.mcp.json` / `claude mcp add`):
 ```json
 { "mcpServers": { "open-why": { "command": "/path/to/open-why/target/release/open-why", "args": ["serve"] } } }
 ```
+
+## Build
+
+```bash
+cargo build --release
+```
+
+Requires Rust 1.88+. The first build downloads the onnxruntime runtime for your
+platform (via `ort`'s `download-binaries`). The embedding model is loaded from
+`OPEN_WHY_EMBED_MODEL_PATH` at runtime, not vendored.
 
 ## License
 

@@ -973,4 +973,47 @@ mod tests {
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].subject, "postgres");
     }
+
+    #[test]
+    fn recency_decay_floors_at_0_3() {
+        // Age must never bury a correct answer to zero — the decay asymptotes at 0.3.
+        assert!((recency_decay(0.0, 7.0) - 1.0).abs() < 1e-9);
+        assert!((recency_decay(1_000.0, 7.0) - RECENCY_DECAY_FLOOR).abs() < 1e-9);
+        // Non-positive half-life returns the floor rather than dividing by zero.
+        assert_eq!(recency_decay(10.0, 0.0), RECENCY_DECAY_FLOOR);
+    }
+
+    #[test]
+    fn recency_decay_uses_spaced_repetition_stability() {
+        // A frequently-accessed memory decays slower than its raw age would suggest:
+        // stability = half-life × (1 + ln(1 + access_count)).
+        let age = 20.0;
+        let flat = recency_decay(age, 7.0); // access_count = 0
+        let stability = 7.0 * (1.0 + (1.0 + 100.0f64).ln());
+        let spaced = recency_decay(age, stability);
+        assert!(spaced > flat, "spaced={spaced} should exceed flat={flat}");
+    }
+
+    #[test]
+    fn bm25_length_normalization_penalizes_long_docs() {
+        // Two rows with the same title overlap; the longer body must not outrank the
+        // shorter one on that term alone. This mirrors FTS5's length normalisation.
+        let q = "worktree corruption";
+        let long = decision(
+            "worktree",
+            &("node_modules ".repeat(300)),
+            0.5,
+            None,
+        );
+        let short = decision("worktree", "corruption", 0.5, None);
+        let ranked = rank(q, None, vec![long, short], 1700000000, 10);
+        assert_eq!(ranked[0].subject, "worktree");
+    }
+
+    #[test]
+    fn query_conditional_recency_weights() {
+        assert!((recency_weight_for("the latest lane policy") - RECENCY_BOOST).abs() < 1e-9);
+        assert!((recency_weight_for("how it used to work") - RECENCY_SUPPRESS).abs() < 1e-9);
+        assert!((recency_weight_for("worktree corruption") - 1.0).abs() < 1e-9);
+    }
 }
