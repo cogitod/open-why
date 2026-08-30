@@ -1,4 +1,4 @@
-use crate::store::Decision;
+use crate::store::{Decision, ExternalDecision};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,7 @@ impl Store {
                 date TEXT NOT NULL DEFAULT '',
                 scope TEXT NOT NULL DEFAULT 'global',
                 superseded_by TEXT,
+                valid_from TEXT,
                 valid_until TEXT,
                 content_digest TEXT NOT NULL,
                 source_identity TEXT NOT NULL,
@@ -55,6 +56,20 @@ impl Store {
                 PRIMARY KEY (decision_id, commit_hash)
              );",
         )?;
+        self.ensure_valid_from()?;
+        Ok(())
+    }
+
+    /// Backward-compatible column add for stores created before `valid_from` existed.
+    fn ensure_valid_from(&self) -> Result<()> {
+        let has: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE name='valid_from'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            self.conn.execute_batch("ALTER TABLE decisions ADD COLUMN valid_from TEXT;")?;
+        }
         Ok(())
     }
 
@@ -90,6 +105,95 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(existing)
+    }
+
+    /// Capture a decision with an externally-minted id (a cogitod memory UUID) and an
+    /// explicit validity start. Idempotent by the external id: re-capturing the same id
+    /// returns it without a duplicate. `supersedes` retires an older decision.
+    pub fn capture_external(
+        &self,
+        d: &Decision,
+        scope: &str,
+        id: &str,
+        valid_from: Option<&str>,
+        supersedes: Option<&str>,
+    ) -> Result<String> {
+        let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
+        let importance = d.importance.clamp(0.0, 1.0);
+        let commit = if d.kind == "commit" { d.sha.clone() } else { String::new() };
+        let now = now_epoch();
+        let now_str = epoch_to_iso(now);
+        let vfrom = valid_from.map(String::from).unwrap_or_else(|| now_str.clone());
+        let identity = format!("external:{scope}:{id}");
+        self.conn.execute(
+            "INSERT OR IGNORE INTO decisions
+               (id, kind, title, content, importance, source, author, commit_sha, date, scope,
+                valid_from, content_digest, source_identity, created_epoch)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![
+                id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
+                now_str, scope, vfrom, content_digest, identity, now
+            ],
+        )?;
+        if let Some(sid) = supersedes {
+            if !sid.is_empty() {
+                self.conn.execute(
+                    "UPDATE decisions SET superseded_by=?1, valid_until=?2
+                     WHERE id=?3 AND superseded_by IS NULL",
+                    params![id, now_str, sid],
+                )?;
+            }
+        }
+        Ok(id.to_string())
+    }
+
+    /// Bulk-import externally-minted decisions, preserving ids, temporal windows,
+    /// supersession, and git linkage. Idempotent: re-importing the same id replaces it.
+    pub fn import_external(&self, rows: &[ExternalDecision]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO decisions
+                   (id, kind, title, content, importance, source, author, commit_sha, date, scope,
+                    superseded_by, valid_from, valid_until, content_digest, source_identity, created_epoch)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15)",
+            )?;
+            for r in rows {
+                let content_digest = digest(&format!("{}\n{}", r.title, r.content));
+                let identity = format!("external:{}:{}", r.scope, r.id);
+                let epoch = iso_to_epoch(&r.date).unwrap_or(now_epoch());
+                stmt.execute(params![
+                    r.id,
+                    r.kind,
+                    r.title,
+                    r.content,
+                    r.importance.clamp(0.0, 1.0),
+                    r.source,
+                    r.author,
+                    r.date,
+                    r.scope,
+                    r.superseded_by,
+                    r.valid_from,
+                    r.valid_until,
+                    content_digest,
+                    identity,
+                    epoch
+                ])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO decision_git_refs (decision_id, commit_hash, commit_subject)
+                 VALUES (?1,?2,?3)",
+            )?;
+            for r in rows {
+                for g in &r.git_refs {
+                    stmt.execute(params![r.id, g.commit_hash, g.commit_subject])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(rows.len())
     }
 
     /// Search active decisions across scopes and hybrid-rank them.

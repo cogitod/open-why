@@ -86,9 +86,17 @@ pub fn serve() -> Result<()> {
                                     "content": {"type": "string"},
                                     "importance": {"type": "number", "description": "0..1 (default 0.5)"},
                                     "scope": {"type": "string", "description": "default: global"},
+                                    "id": {"type": "string", "description": "optional externally-minted id (preserved verbatim)"},
+                                    "valid_from": {"type": "string", "description": "optional ISO validity start (default: now)"},
                                     "supersedes": {"type": "string", "description": "id of an older decision this one supersedes"}
                                 }),
                                 &["title", "content"]),
+                            tool("openwhy_import",
+                                "Bulk-import externally-minted decisions preserving ids, temporal windows, supersession, and git linkage.",
+                                json!({
+                                    "rows": {"type": "array", "description": "array of decision records {id, kind, title, content, importance?, source?, author?, date?, scope?, valid_from?, valid_until?, superseded_by?, git_refs?:[{commit_hash, commit_subject}]}"}
+                                }),
+                                &["rows"]),
                             tool("openwhy_search",
                                 "Search the decision store across a scope.",
                                 json!({
@@ -186,6 +194,8 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             };
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
             let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
+            let id = s(args, "id");
+            let valid_from = s(args, "valid_from");
             let supersedes = s(args, "supersedes");
             let d = store::Decision {
                 subject: title,
@@ -195,8 +205,24 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 source: "capture".to_string(),
                 ..store::Decision::default()
             };
-            match store.capture(&d, &scope, supersedes.as_deref()) {
+            let result = match id.as_deref() {
+                Some(id) if !id.is_empty() => {
+                    store.capture_external(&d, &scope, id, valid_from.as_deref(), supersedes.as_deref())
+                }
+                _ => store.capture(&d, &scope, supersedes.as_deref()),
+            };
+            match result {
                 Ok(id) => format!("captured decision {id} (scope: {scope})"),
+                Err(e) => format!("error: {e:#}"),
+            }
+        }
+        "openwhy_import" => {
+            let rows: Vec<store::ExternalDecision> = match serde_json::from_value(args.get("rows").cloned().unwrap_or(Value::Null)) {
+                Ok(rows) => rows,
+                Err(e) => return format!("error: bad rows: {e}"),
+            };
+            match store.import_external(&rows) {
+                Ok(n) => format!("imported {n} decisions"),
                 Err(e) => format!("error: {e:#}"),
             }
         }

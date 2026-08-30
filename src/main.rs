@@ -5,7 +5,7 @@ mod miner;
 mod search;
 mod store;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -48,6 +48,12 @@ enum Command {
         /// Scope (default: global)
         #[arg(long)]
         scope: Option<String>,
+        /// Optional externally-minted id (preserved verbatim)
+        #[arg(long)]
+        id: Option<String>,
+        /// Optional ISO validity start (default: now)
+        #[arg(long)]
+        valid_from: Option<String>,
         /// Id of an older decision this one supersedes
         #[arg(long)]
         supersedes: Option<String>,
@@ -70,6 +76,12 @@ enum Command {
         decision: String,
         #[arg(long)]
         subject: Option<String>,
+    },
+    /// Bulk-import externally-minted decisions from JSON on stdin
+    Import {
+        /// Path to a JSON file (default: read JSON array from stdin)
+        #[arg(long)]
+        file: Option<String>,
     },
     /// Run as an MCP stdio server
     Serve {},
@@ -100,6 +112,8 @@ fn main() -> Result<()> {
             content,
             importance,
             scope,
+            id,
+            valid_from,
             supersedes,
         } => {
             let store = db::Store::open(&db::default_path())?;
@@ -112,7 +126,13 @@ fn main() -> Result<()> {
                 source: "capture".to_string(),
                 ..store::Decision::default()
             };
-            let id = store.capture(&d, &scope, supersedes.as_deref())?;
+            let result = match id.as_deref() {
+                Some(id) if !id.is_empty() => {
+                    store.capture_external(&d, &scope, id, valid_from.as_deref(), supersedes.as_deref())
+                }
+                _ => store.capture(&d, &scope, supersedes.as_deref()),
+            };
+            let id = result?;
             println!("captured decision {id} (scope: {scope})");
         }
         Command::Search {
@@ -152,6 +172,22 @@ fn main() -> Result<()> {
             let subject = subject.unwrap_or_default();
             store.link_git(&decision, &commit, &subject)?;
             println!("linked {commit} -> {decision}");
+        }
+        Command::Import { file } => {
+            let store = db::Store::open(&db::default_path())?;
+            let text = match file {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("read {path}"))?,
+                None => {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf)?;
+                    buf
+                }
+            };
+            let rows: Vec<store::ExternalDecision> = serde_json::from_str(&text)?;
+            let n = store.import_external(&rows)?;
+            println!("imported {n} decisions");
         }
         Command::Serve {} => mcp::serve()?,
     }
