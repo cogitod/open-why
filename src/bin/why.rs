@@ -87,6 +87,16 @@ enum Command {
     },
     /// Download the local embedding model so no env var is needed
     FetchModel {},
+    /// Record retrieval feedback on a decision (closes the usage→quality loop)
+    Feedback {
+        id: String,
+        /// Mark the decision helpful (raises its effectiveness)
+        #[arg(long)]
+        helpful: bool,
+        /// Mark the decision not helpful (lowers its effectiveness)
+        #[arg(long)]
+        not_helpful: bool,
+    },
     /// Run as an MCP stdio server
     Serve {},
 }
@@ -189,6 +199,17 @@ fn main() -> Result<()> {
             Command::FetchModel {} => {
                 let dir = embed::fetch_model()?;
                 println!("model ready at {}", dir.display());
+                Ok(())
+            }
+            Command::Feedback { id, helpful, not_helpful } => {
+                if helpful == not_helpful {
+                    anyhow::bail!("pass exactly one of --helpful or --not-helpful");
+                }
+                let store = db::Store::open_default()?;
+                match store.feedback(&id, helpful)? {
+                    Some(eff) => println!("recorded {} feedback on {id}: effectiveness now {eff:.3}", if helpful { "helpful" } else { "not-helpful" }),
+                    None => println!("no active decision with id {id}"),
+                }
                 Ok(())
             }
             Command::Serve {} => mcp::serve(),

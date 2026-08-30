@@ -143,7 +143,15 @@ pub fn serve() -> Result<()> {
                                     "decision": {"type": "string"},
                                     "subject": {"type": "string"}
                                 }),
-                                &["commit", "decision"])
+                                &["commit", "decision"]),
+                            tool("open-why_feedback",
+                                "Record retrieval feedback on a decision (helpful raises its effectiveness, not-helpful lowers it) — the usage-to-quality loop.",
+                                json!({
+                                    "id": {"type": "string", "description": "decision id"},
+                                    "helpful": {"type": "boolean", "description": "true = helpful, false = not helpful"},
+                                    "notes": {"type": "string", "description": "optional note (ignored by the ranker, kept for the log)"}
+                                }),
+                                &["id", "helpful"])
                         ]
                     }
                 });
@@ -305,6 +313,23 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             }
             match store.link_git(&decision, &commit, &subject) {
                 Ok(()) => format!("linked {commit} -> {decision}"),
+                Err(e) => format!("error: {e:#}"),
+            }
+        }
+        "open-why_feedback" => {
+            let id = s(args, "id").unwrap_or_default();
+            let helpful = args.get("helpful").and_then(|v| v.as_bool());
+            let Some(helpful) = helpful else {
+                return "error: helpful (boolean) is required".to_string();
+            };
+            match store.feedback(&id, helpful) {
+                Ok(Some(eff)) => serde_json::to_string(&json!({
+                    "memory_id": id,
+                    "helpful": helpful,
+                    "effectiveness": eff,
+                    "recorded": true
+                })).unwrap_or_else(|e| format!("error: {e}")),
+                Ok(None) => format!("no active decision with id {id}"),
                 Err(e) => format!("error: {e:#}"),
             }
         }
