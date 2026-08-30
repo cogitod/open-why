@@ -528,6 +528,12 @@ impl Store {
 const RRF_K: f64 = 60.0;
 /// BM25 leads the inline fusion in cogitod (arXiv 2605.15184, Table 1).
 const BM25_WEIGHT: f64 = 1.5;
+/// FTS5 BM25 saturation (k1) and length-normalisation (b) defaults, matching cogitod's
+/// `bm25(memories_fts, 0, 10, 5, 1)` — title ×10, content ×5, tags ×1.
+const BM25_K1: f64 = 1.2;
+const BM25_B: f64 = 0.75;
+const BM25_TITLE_W: f64 = 10.0;
+const BM25_CONTENT_W: f64 = 5.0;
 /// Hybrid rerank weights (sim / importance / effectiveness), matching cogitod.
 const RERANK_W_SIM: f64 = 0.65;
 const RERANK_W_IMPORTANCE: f64 = 0.25;
@@ -553,6 +559,20 @@ fn contains_word(haystack: &str, word: &str) -> bool {
     haystack
         .split(|c: char| !c.is_alphanumeric())
         .any(|t| t == word)
+}
+
+fn count_word(haystack: &str, word: &str) -> usize {
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| *t == word)
+        .count()
+}
+
+fn doc_len(haystack: &str) -> usize {
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .count()
 }
 
 /// Query-conditional recency multiplier. Word-boundary match (via tokenization) so `now` does
@@ -627,19 +647,23 @@ fn rank_by<T>(
     // only the common word "memory" outscores one matching the rarer "capability"/"engine".
     let n_docs = rows.len().max(1);
     let mut df = vec![0usize; words.len()];
+    let mut total_len = 0usize;
     for d in rows.iter() {
         let f = fields(d);
         let subject = f.subject.to_lowercase();
         let body = f.body.to_lowercase();
+        total_len += doc_len(&subject) + doc_len(&body);
         for (i, w) in words.iter().enumerate() {
             if subject.contains(w) || body.contains(w) {
                 df[i] += 1;
             }
         }
     }
+    let avgdl = total_len as f64 / n_docs as f64;
+    // FTS5 bm25 idf: ln((N - n + 0.5) / (n + 0.5)).
     let idf: Vec<f64> = df
         .iter()
-        .map(|&d| ((n_docs as f64 - d as f64 + 0.5) / (d as f64 + 0.5) + 1.0).ln())
+        .map(|&d| ((n_docs as f64 - d as f64 + 0.5) / (d as f64 + 0.5)).ln())
         .collect();
 
     // Per-row score capsule. `None` = no signal.
@@ -662,17 +686,17 @@ fn rank_by<T>(
             let body = f.body.to_lowercase();
             // Unweighted overlap for the lexical proxy and the no-signal check.
             let lex_raw = crate::search::score(&words, f.subject, f.body) as f64;
-            // Id-weighted lexical score: subject hit ×5, body hit ×1, each × idf(term).
+            // BM25 with column weights (title ×10, content ×5) and length normalisation,
+            // mirroring cogitod's FTS5 `bm25(memories_fts, 0, 10, 5, 1)`.
+            let dl = (doc_len(&subject) + doc_len(&body)) as f64;
+            let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl.max(1.0));
             let mut lex = 0.0f64;
             for (i, w) in words.iter().enumerate() {
-                let mut tf = 0.0;
-                if subject.contains(w) {
-                    tf += 5.0;
+                let f = BM25_TITLE_W * count_word(&subject, w) as f64
+                    + BM25_CONTENT_W * count_word(&body, w) as f64;
+                if f > 0.0 {
+                    lex += idf[i] * (f * (BM25_K1 + 1.0)) / (f + BM25_K1 * norm);
                 }
-                if body.contains(w) {
-                    tf += 1.0;
-                }
-                lex += idf[i] * tf;
             }
             // Semantic similarity replaces the lexical proxy when both the query and the row
             // carry an embedding; the lexical proxy remains the fallback otherwise.
