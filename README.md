@@ -148,6 +148,28 @@ Claude Code / Codex (`.mcp.json` / `claude mcp add`):
 { "mcpServers": { "open-why": { "command": "/path/to/open-why/target/release/why", "args": ["serve"] } } }
 ```
 
+## Retrieval parity
+
+`tests/fixtures/golden-queries.json` pins a golden set: for each query, the top-1
+memory cogitod's production `mem_search` returned against the live durable corpus
+(project `1`), captured at fixture time. `why-golden` checks open-why's top-1
+matches by id — the memory UUID survives the mirror verbatim, so parity is an
+exact-id comparison, not a fuzzy title match.
+
+```bash
+OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2 \
+  cargo run --release --bin why-golden
+```
+
+Both engines are run against the same corpus (open-why's store is a mirror of
+cogitod's durable memories) and the same local embedder. The reference answer is
+captured, not computed live, so the check is a deterministic regression gate.
+
+Known gap (2026-08-30): strong semantic anchors match exactly, but lexical-heavy
+multi-term queries diverge — open-why reimplements BM25 (idf/avgdl over the
+candidate pool, custom tokenizer) while cogitod calls SQLite FTS5 `bm25()` over an
+external-content index. The path to exact parity is a native FTS5 virtual table.
+
 ## Build
 
 ```bash
