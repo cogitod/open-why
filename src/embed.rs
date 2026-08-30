@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -219,8 +219,9 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// Configure an embedder from the environment. `OPEN_WHY_EMBED_MODEL_PATH` takes precedence and
 /// selects the local on-device model; `OPEN_WHY_EMBED_URL` selects an OpenAI-compatible remote;
-/// `Ok(None)` = lexical-first (the shipped default). `Err` only when a path was requested but
-/// failed to load.
+/// with neither, the fetched model cache (`why fetch-model`) is used when present (auto-fetched
+/// when `OPEN_WHY_AUTO_FETCH=1`); `Ok(None)` = lexical-first (the shipped default). `Err` only
+/// when a path was requested but failed to load.
 pub fn from_env() -> Result<Option<Box<dyn Embedder>>> {
     if let Ok(dir) = std::env::var("OPEN_WHY_EMBED_MODEL_PATH") {
         if dir.trim().is_empty() {
@@ -231,12 +232,58 @@ pub fn from_env() -> Result<Option<Box<dyn Embedder>>> {
         return Ok(Some(Box::new(embedder)));
     }
     let Some(url) = std::env::var("OPEN_WHY_EMBED_URL").ok() else {
+        // Neither configured: fall back to the fetched model cache when present.
+        let dir = model_cache_dir();
+        let onnx = dir.join("onnx").join("model_quantized.onnx");
+        if !onnx.exists() && std::env::var("OPEN_WHY_AUTO_FETCH").ok().as_deref() == Some("1") {
+            fetch_model()?;
+        }
+        if onnx.exists() {
+            let embedder = LocalEmbedder::new(&dir)
+                .with_context(|| format!("cached model at {}", dir.display()))?;
+            return Ok(Some(Box::new(embedder)));
+        }
         return Ok(None);
     };
     let model = std::env::var("OPEN_WHY_EMBED_MODEL")
         .unwrap_or_else(|_| "text-embedding-3-small".to_string());
     let api_key = std::env::var("OPEN_WHY_EMBED_API_KEY").ok();
     Ok(Some(Box::new(HttpEmbedder::new(url, model, api_key))))
+}
+
+/// Where the fetched local model lives (`~/.cache/open-why/models/Xenova/all-MiniLM-L6-v2`).
+pub fn model_cache_dir() -> PathBuf {
+    crate::store::cache_dir()
+        .join("models")
+        .join("Xenova")
+        .join("all-MiniLM-L6-v2")
+}
+
+const MODEL_FILES: [&str; 3] = ["tokenizer.json", "config.json", "onnx/model_quantized.onnx"];
+const MODEL_BASE_URL: &str = "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/";
+
+/// Download the `Xenova/all-MiniLM-L6-v2` model files into the cache, skipping any already
+/// present. Returns the model directory on success.
+pub fn fetch_model() -> Result<PathBuf> {
+    let dir = model_cache_dir();
+    for f in MODEL_FILES {
+        let dest = dir.join(f);
+        if dest.exists() {
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let url = format!("{MODEL_BASE_URL}{f}");
+        let bytes = ureq::get(&url)
+            .call()
+            .with_context(|| format!("download {url}"))?
+            .body_mut()
+            .read_to_vec()
+            .with_context(|| format!("read {url}"))?;
+        std::fs::write(&dest, &bytes).with_context(|| format!("write {}", dest.display()))?;
+    }
+    Ok(dir)
 }
 
 #[cfg(test)]
