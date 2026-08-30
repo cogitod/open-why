@@ -1,5 +1,6 @@
 mod answer;
 mod db;
+mod embed;
 mod mcp;
 mod miner;
 mod search;

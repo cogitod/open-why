@@ -11,6 +11,8 @@ pub struct Decision {
     pub source: String,
     pub importance: f64,
     pub kind: String,
+    #[serde(skip)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Default for Decision {
@@ -24,6 +26,7 @@ impl Default for Decision {
             source: String::new(),
             importance: 0.5,
             kind: String::new(),
+            embedding: None,
         }
     }
 }
@@ -70,6 +73,8 @@ pub struct Record {
     pub superseded_by: Option<String>,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
+    #[serde(skip)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 /// A decision imported with an externally-minted id (e.g. a cogitod memory UUID).

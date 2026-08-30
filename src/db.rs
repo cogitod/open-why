@@ -1,4 +1,5 @@
 use crate::store::{Decision, ExternalDecision, Record};
+use crate::embed::Embedder;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -12,17 +13,35 @@ pub fn default_path() -> PathBuf {
 /// The "why" core store. Owns the decision record (temporal + provenance + git linkage).
 pub struct Store {
     conn: Connection,
+    embedder: Option<Box<dyn Embedder>>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
+        Self::open_with_embedder(path, None)
+    }
+
+    pub fn open_with_embedder(path: &Path, embedder: Option<Box<dyn Embedder>>) -> Result<Store> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        let store = Store { conn };
+        let store = Store { conn, embedder };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Best-effort embedding of the searchable text (title + content). Returns the JSON
+    /// vector when an embedder is configured and succeeds; `None` keeps the row lexical.
+    fn embed_text(&self, title: &str, content: &str) -> Option<String> {
+        let embedder = self.embedder.as_ref()?;
+        let text = if title.is_empty() { content.to_string() } else { format!("{title}\n{content}") };
+        let vec = embedder.embed(&text).ok()?;
+        serde_json::to_string(&vec).ok()
+    }
+
+    fn query_embedding(&self, query: &str) -> Option<Vec<f32>> {
+        self.embedder.as_ref()?.embed(query).ok()
     }
 
     fn migrate(&self) -> Result<()> {
@@ -42,6 +61,7 @@ impl Store {
                 valid_from TEXT,
                 valid_until TEXT,
                 fact_key TEXT,
+                embedding TEXT,
                 content_digest TEXT NOT NULL,
                 source_identity TEXT NOT NULL,
                 created_epoch INTEGER NOT NULL DEFAULT 0
@@ -59,6 +79,7 @@ impl Store {
         )?;
         self.ensure_column("valid_from", "TEXT")?;
         self.ensure_column("fact_key", "TEXT")?;
+        self.ensure_column("embedding", "TEXT")?;
         Ok(())
     }
 
@@ -131,14 +152,15 @@ impl Store {
         let vfrom = valid_from.map(String::from).unwrap_or_else(|| now_str.clone());
         let identity = format!("external:{scope}:{id}");
         let fact_key = fact_key.filter(|k| !k.is_empty()).map(String::from);
+        let embedding = self.embed_text(&d.subject, &d.body);
         self.conn.execute(
             "INSERT OR IGNORE INTO decisions
                (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                valid_from, fact_key, content_digest, source_identity, created_epoch)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                valid_from, fact_key, embedding, content_digest, source_identity, created_epoch)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
-                now_str, scope, vfrom, fact_key, content_digest, identity, now
+                now_str, scope, vfrom, fact_key, embedding, content_digest, identity, now
             ],
         )?;
         // Retire predecessors: the explicit supersedes id, then any current record that
@@ -183,13 +205,14 @@ impl Store {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO decisions
                    (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                    superseded_by, valid_from, valid_until, fact_key, content_digest, source_identity, created_epoch)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                    superseded_by, valid_from, valid_until, fact_key, embedding, content_digest, source_identity, created_epoch)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             )?;
             for r in rows {
                 let content_digest = digest(&format!("{}\n{}", r.title, r.content));
                 let identity = format!("external:{}:{}", r.scope, r.id);
                 let epoch = iso_to_epoch(&r.date).unwrap_or(now_epoch());
+                let embedding = self.embed_text(&r.title, &r.content);
                 stmt.execute(params![
                     r.id,
                     r.kind,
@@ -204,6 +227,7 @@ impl Store {
                     r.valid_from,
                     r.valid_until,
                     r.fact_key,
+                    embedding,
                     content_digest,
                     identity,
                     epoch
@@ -232,7 +256,7 @@ impl Store {
         }
         let placeholders = vec!["?"; scopes.len()].join(",");
         let sql = format!(
-            "SELECT kind,title,content,importance,source,author,commit_sha,date
+            "SELECT kind,title,content,importance,source,author,commit_sha,date,embedding
              FROM decisions
              WHERE superseded_by IS NULL AND valid_until IS NULL
                AND scope IN ({placeholders})"
@@ -249,14 +273,15 @@ impl Store {
                 author: r.get(5)?,
                 sha: r.get(6)?,
                 date: r.get(7)?,
-                ..Decision::default()
+                embedding: parse_embedding(r.get::<_, Option<String>>(8)?),
             })
         })?;
         let mut all = Vec::new();
         for row in rows {
             all.push(row?);
         }
-        Ok(rank(query, all, now_epoch(), limit))
+        let qe = self.query_embedding(query);
+        Ok(rank(query, qe.as_deref(), all, now_epoch(), limit))
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Decision>> {
@@ -305,7 +330,7 @@ impl Store {
         let placeholders = vec!["?"; scopes.len()].join(",");
         let sql = format!(
             "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                    superseded_by,valid_from,valid_until
+                    superseded_by,valid_from,valid_until,embedding
              FROM decisions
              WHERE superseded_by IS NULL AND valid_until IS NULL
                AND scope IN ({placeholders})"
@@ -327,13 +352,15 @@ impl Store {
                 superseded_by: r.get(10)?,
                 valid_from: r.get(11)?,
                 valid_until: r.get(12)?,
+                embedding: parse_embedding(r.get::<_, Option<String>>(13)?),
             })
         })?;
         let mut all = Vec::new();
         for row in rows {
             all.push(row?);
         }
-        Ok(rank_by(query, all, now_epoch(), limit, |d| (&d.title, &d.content, d.importance, &d.date, &d.kind)))
+        let qe = self.query_embedding(query);
+        Ok(rank_by(query, qe.as_deref(), all, now_epoch(), limit, |d| (&d.title, &d.content, d.importance, &d.date, &d.kind, d.embedding.as_deref())))
     }
 
     pub fn get_record(&self, id: &str) -> Result<Option<Record>> {
@@ -359,6 +386,7 @@ impl Store {
                         superseded_by: r.get(10)?,
                         valid_from: r.get(11)?,
                         valid_until: r.get(12)?,
+                        embedding: None,
                     })
                 },
             )
@@ -421,30 +449,37 @@ impl Store {
 
 /// Hybrid rerank: 0.65 similarity + 0.25 importance, × Ebbinghaus recency decay.
 /// Effectiveness (0.10 in cogitod) is folded out until grading exists — it is a
-/// constant prior that never changes ordering. Similarity is a lexical proxy here;
-/// embeddings land in P2. Decisions decay with a 2-day half-life (point-in-time),
-/// everything else 7 days.
-fn rank(query: &str, rows: Vec<Decision>, now: i64, limit: usize) -> Vec<Decision> {
-    rank_by(query, rows, now, limit, |d| (&d.subject, &d.body, d.importance, &d.date, &d.kind))
+/// constant prior that never changes ordering. `similarity` is lexical-first: a
+/// pluggable embedder supplies a semantic (cosine) similarity that replaces the
+/// lexical proxy for rows that carry an embedding; rows without one keep the proxy.
+/// Decisions decay with a 2-day half-life (point-in-time), everything else 7 days.
+fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, now: i64, limit: usize) -> Vec<Decision> {
+    rank_by(query, query_embedding, rows, now, limit, |d| (&d.subject, &d.body, d.importance, &d.date, &d.kind, d.embedding.as_deref()))
 }
 
 fn rank_by<T>(
     query: &str,
+    query_embedding: Option<&[f32]>,
     rows: Vec<T>,
     now: i64,
     limit: usize,
-    fields: impl Fn(&T) -> (&str, &str, f64, &str, &str),
+    fields: impl Fn(&T) -> (&str, &str, f64, &str, &str, Option<&[f32]>),
 ) -> Vec<T> {
     let words = crate::search::tokenize(query);
     let mut scored: Vec<(f64, T)> = rows
         .into_iter()
         .filter_map(|d| {
-            let (subject, body, importance, date, kind) = fields(&d);
+            let (subject, body, importance, date, kind, embedding) = fields(&d);
             let lex = crate::search::score(&words, subject, body) as f64;
-            if lex <= 0.0 {
+            // Semantic similarity replaces the lexical proxy when both the query and the
+            // row carry an embedding; the lexical proxy remains the fallback otherwise.
+            let sim = match (query_embedding, embedding) {
+                (Some(q), Some(e)) => crate::embed::cosine(q, e) as f64,
+                _ => lex / (lex + 10.0),
+            };
+            if lex <= 0.0 && sim <= 0.0 {
                 return None;
             }
-            let sim = lex / (lex + 10.0);
             let mut s = 0.65 * sim + 0.25 * importance;
             if let Some(epoch) = iso_to_epoch(date) {
                 let age_days = ((now - epoch) as f64 / 86_400.0).max(0.0);
@@ -457,6 +492,10 @@ fn rank_by<T>(
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);
     scored.into_iter().map(|(_, d)| d).collect()
+}
+
+fn parse_embedding(raw: Option<String>) -> Option<Vec<f32>> {
+    raw.and_then(|s| serde_json::from_str::<Vec<f32>>(&s).ok())
 }
 
 fn digest(s: &str) -> String {
@@ -525,4 +564,76 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embed::{cosine, Embedder};
+    use crate::store::Decision;
+
+    struct FakeEmbedder;
+    impl Embedder for FakeEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>> {
+            Ok(match text {
+                "cat" | "feline" => vec![1.0, 0.0],
+                "dog" => vec![0.0, 1.0],
+                _ => vec![0.0, 0.0],
+            })
+        }
+    }
+
+    fn decision(subject: &str, body: &str, importance: f64, embedding: Option<Vec<f32>>) -> Decision {
+        Decision {
+            sha: String::new(),
+            author: String::new(),
+            date: "2026-01-01T00:00:00Z".to_string(),
+            subject: subject.to_string(),
+            body: body.to_string(),
+            source: String::new(),
+            importance,
+            kind: "decision".to_string(),
+            embedding,
+        }
+    }
+
+    #[test]
+    fn cosine_is_bounded_and_symmetric() {
+        assert_eq!(cosine(&[1.0, 0.0], &[1.0, 0.0]), 1.0);
+        assert_eq!(cosine(&[1.0, 0.0], &[0.0, 1.0]), 0.0);
+        assert_eq!(cosine(&[1.0, 0.0], &[]), 0.0);
+    }
+
+    #[test]
+    fn lexical_first_without_query_embedding() {
+        let rows = vec![
+            decision("sqlite local record", "single file", 0.5, None),
+            decision("postgres", "row level security", 0.5, None),
+        ];
+        let ranked = rank("sqlite", None, rows, 1700000000, 10);
+        assert_eq!(ranked[0].subject, "sqlite local record");
+    }
+
+    #[test]
+    fn semantic_similarity_surfaces_a_row_with_no_lexical_overlap() {
+        // "feline" shares no token with "cat", but its embedding matches — semantic
+        // similarity must rank it first and must not require a lexical hit.
+        let rows = vec![
+            decision("feline", "a small domesticated animal", 0.5, Some(vec![1.0, 0.0])),
+            decision("dog", "a loyal companion", 0.5, Some(vec![0.0, 1.0])),
+        ];
+        let q = FakeEmbedder.embed("cat").unwrap();
+        let ranked = rank("cat", Some(&q), rows, 1700000000, 10);
+        assert_eq!(ranked[0].subject, "feline");
+    }
+
+    #[test]
+    fn missing_embedding_falls_back_to_lexical_proxy() {
+        // A row with an embedding ranks semantically; a row without one still ranks
+        // via the lexical proxy and must not be dropped.
+        let rows = vec![decision("postgres", "row level security", 0.5, None)];
+        let ranked = rank("postgres", Some(&[1.0, 0.0]), rows, 1700000000, 10);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].subject, "postgres");
+    }
 }

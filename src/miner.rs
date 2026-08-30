@@ -80,6 +80,7 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
                 source: "commit".to_string(),
                 importance: 0.5,
                 kind: "commit".to_string(),
+                embedding: None,
             });
         }
     }
@@ -118,6 +119,7 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
             source: file.to_string(),
             importance: 0.5,
             kind: "adr".to_string(),
+            embedding: None,
         });
     }
 
