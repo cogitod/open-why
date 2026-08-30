@@ -75,11 +75,14 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
                 sha: f[0].trim().to_string(),
                 author: f[1].trim().to_string(),
                 date: f[2].trim().to_string(),
+                updated_at: String::new(),
                 subject: f[3].trim().to_string(),
                 body: f[4].trim().to_string(),
                 source: "commit".to_string(),
                 importance: 0.5,
                 kind: "commit".to_string(),
+                access_count: 0,
+                effectiveness: 0.5,
                 embedding: None,
             });
         }
@@ -114,11 +117,14 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
             sha,
             author,
             date,
+            updated_at: String::new(),
             subject,
             body: content.trim().to_string(),
             source: file.to_string(),
             importance: 0.5,
             kind: "adr".to_string(),
+            access_count: 0,
+            effectiveness: 0.5,
             embedding: None,
         });
     }

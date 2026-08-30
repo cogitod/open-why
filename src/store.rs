@@ -6,11 +6,17 @@ pub struct Decision {
     pub sha: String,
     pub author: String,
     pub date: String,
+    #[serde(skip)]
+    pub updated_at: String,
     pub subject: String,
     pub body: String,
     pub source: String,
     pub importance: f64,
     pub kind: String,
+    #[serde(skip)]
+    pub access_count: i64,
+    #[serde(skip)]
+    pub effectiveness: f64,
     #[serde(skip)]
     pub embedding: Option<Vec<f32>>,
 }
@@ -21,11 +27,14 @@ impl Default for Decision {
             sha: String::new(),
             author: String::new(),
             date: String::new(),
+            updated_at: String::new(),
             subject: String::new(),
             body: String::new(),
             source: String::new(),
             importance: 0.5,
             kind: String::new(),
+            access_count: 0,
+            effectiveness: 0.5,
             embedding: None,
         }
     }
@@ -74,6 +83,12 @@ pub struct Record {
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     #[serde(skip)]
+    pub updated_at: String,
+    #[serde(skip)]
+    pub access_count: i64,
+    #[serde(skip)]
+    pub effectiveness: f64,
+    #[serde(skip)]
     pub embedding: Option<Vec<f32>>,
 }
 
@@ -94,6 +109,16 @@ pub struct ExternalDecision {
     pub author: String,
     #[serde(default)]
     pub date: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub accessed_count: Option<i64>,
+    #[serde(default)]
+    pub times_injected: Option<i64>,
+    #[serde(default)]
+    pub effectiveness: Option<f64>,
+    #[serde(default)]
+    pub tags: Option<String>,
     #[serde(default = "default_scope")]
     pub scope: String,
     #[serde(default)]

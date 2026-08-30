@@ -3,13 +3,13 @@ use anyhow::Result;
 use std::path::Path;
 
 pub fn ask(question: &str, repo: &Path, limit: usize) -> Result<String> {
-    let store = db::Store::open(&db::default_path())?;
+    let store = db::Store::open_default()?;
     let scope = crate::store::scope_for(repo);
     if store.count_for_scope(&scope)? == 0 {
         let mined = miner::mine(repo)?;
         store.import_decisions(&scope, &mined)?;
     }
-    let hits = store.search(question, &[scope.as_str(), "global"], limit)?;
+    let hits = store.search(question, &[scope.as_str(), "global"], &[], limit)?;
     if hits.is_empty() {
         return Ok(format!("no decision found for: \"{question}\""));
     }

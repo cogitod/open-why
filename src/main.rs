@@ -69,6 +69,9 @@ enum Command {
         limit: usize,
         #[arg(long)]
         scope: Option<String>,
+        /// Optional kind facet (comma-separated): decision, fact, reference, project, ...
+        #[arg(long, value_delimiter = ',')]
+        types: Vec<String>,
     },
     /// Fetch one decision by id
     Get {
@@ -97,7 +100,7 @@ fn main() -> Result<()> {
         Command::Init { repo } => {
             let repo = miner::resolve_repo(repo)?;
             let decisions = miner::mine(&repo)?;
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             let scope = store::scope_for(&repo);
             store.import_decisions(&scope, &decisions)?;
             println!("indexed {} decisions (scope: {scope})", decisions.len());
@@ -121,7 +124,7 @@ fn main() -> Result<()> {
             fact_key,
             supersedes,
         } => {
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             let scope = scope.unwrap_or_else(|| "global".to_string());
             let d = store::Decision {
                 subject: title,
@@ -144,14 +147,15 @@ fn main() -> Result<()> {
             query,
             limit,
             scope,
+            types,
         } => {
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             let scope = scope.unwrap_or_else(|| "global".to_string());
-            let hits = store.search(&query, &[scope.as_str()], limit)?;
+            let hits = store.search(&query, &[scope.as_str()], &types, limit)?;
             print!("{}", answer::render(hits));
         }
         Command::Get { id } => {
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             match store.get(&id)? {
                 Some(d) => {
                     println!("- {}", d.subject);
@@ -173,13 +177,13 @@ fn main() -> Result<()> {
             decision,
             subject,
         } => {
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             let subject = subject.unwrap_or_default();
             store.link_git(&decision, &commit, &subject)?;
             println!("linked {commit} -> {decision}");
         }
         Command::Import { file } => {
-            let store = db::Store::open(&db::default_path())?;
+            let store = db::Store::open_default()?;
             let text = match file {
                 Some(path) => std::fs::read_to_string(&path)
                     .with_context(|| format!("read {path}"))?,

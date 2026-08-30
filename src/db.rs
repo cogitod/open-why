@@ -17,8 +17,18 @@ pub struct Store {
 }
 
 impl Store {
+    /// Open a store without an embedder (lexical-first). Kept as the explicit no-embedder entry
+    /// point; every command path uses `open_default` so the semantic arm is active uniformly.
+    #[allow(dead_code)]
     pub fn open(path: &Path) -> Result<Store> {
         Self::open_with_embedder(path, None)
+    }
+
+    /// Open the default store, wiring an embedder from the environment when one is configured
+    /// (`OPEN_WHY_EMBED_MODEL_PATH` or `OPEN_WHY_EMBED_URL`). This is the entry point every CLI
+    /// command and the MCP server use, so the semantic arm is active uniformly.
+    pub fn open_default() -> Result<Store> {
+        Self::open_with_embedder(&default_path(), crate::embed::from_env()?)
     }
 
     pub fn open_with_embedder(path: &Path, embedder: Option<Box<dyn Embedder>>) -> Result<Store> {
@@ -31,11 +41,26 @@ impl Store {
         Ok(store)
     }
 
-    /// Best-effort embedding of the searchable text (title + content). Returns the JSON
-    /// vector when an embedder is configured and succeeds; `None` keeps the row lexical.
-    fn embed_text(&self, title: &str, content: &str) -> Option<String> {
+    /// Best-effort embedding of the searchable text. Mirrors cogitod's `embeddingText`:
+    /// `title\ncontent`, then the space-joined tag array when present. Returns the JSON vector
+    /// when an embedder is configured and succeeds; `None` keeps the row lexical.
+    fn embed_text(&self, title: &str, content: &str, tags: Option<&str>) -> Option<String> {
         let embedder = self.embedder.as_ref()?;
-        let text = if title.is_empty() { content.to_string() } else { format!("{title}\n{content}") };
+        let mut text = String::new();
+        let t = title.trim();
+        if !t.is_empty() {
+            text.push_str(t);
+            text.push('\n');
+        }
+        text.push_str(content);
+        if let Some(raw) = tags {
+            if let Ok(v) = serde_json::from_str::<Vec<String>>(raw) {
+                if !v.is_empty() {
+                    text.push('\n');
+                    text.push_str(&v.join(" "));
+                }
+            }
+        }
         let vec = embedder.embed(&text).ok()?;
         serde_json::to_string(&vec).ok()
     }
@@ -80,6 +105,11 @@ impl Store {
         self.ensure_column("valid_from", "TEXT")?;
         self.ensure_column("fact_key", "TEXT")?;
         self.ensure_column("embedding", "TEXT")?;
+        self.ensure_column("updated_at", "TEXT")?;
+        self.ensure_column("accessed_count", "INTEGER NOT NULL DEFAULT 0")?;
+        self.ensure_column("times_injected", "INTEGER NOT NULL DEFAULT 0")?;
+        self.ensure_column("effectiveness", "REAL NOT NULL DEFAULT 0.5")?;
+        self.ensure_column("tags", "TEXT")?;
         Ok(())
     }
 
@@ -152,15 +182,15 @@ impl Store {
         let vfrom = valid_from.map(String::from).unwrap_or_else(|| now_str.clone());
         let identity = format!("external:{scope}:{id}");
         let fact_key = fact_key.filter(|k| !k.is_empty()).map(String::from);
-        let embedding = self.embed_text(&d.subject, &d.body);
+        let embedding = self.embed_text(&d.subject, &d.body, None);
         self.conn.execute(
             "INSERT OR IGNORE INTO decisions
                (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                valid_from, fact_key, embedding, content_digest, source_identity, created_epoch)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                valid_from, fact_key, embedding, updated_at, content_digest, source_identity, created_epoch)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
-                now_str, scope, vfrom, fact_key, embedding, content_digest, identity, now
+                now_str, scope, vfrom, fact_key, embedding, now_str, content_digest, identity, now
             ],
         )?;
         // Retire predecessors: the explicit supersedes id, then any current record that
@@ -205,14 +235,16 @@ impl Store {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO decisions
                    (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                    superseded_by, valid_from, valid_until, fact_key, embedding, content_digest, source_identity, created_epoch)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                    superseded_by, valid_from, valid_until, fact_key, embedding, updated_at,
+                    accessed_count, times_injected, effectiveness, tags, content_digest, source_identity, created_epoch)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             )?;
             for r in rows {
                 let content_digest = digest(&format!("{}\n{}", r.title, r.content));
                 let identity = format!("external:{}:{}", r.scope, r.id);
                 let epoch = iso_to_epoch(&r.date).unwrap_or(now_epoch());
-                let embedding = self.embed_text(&r.title, &r.content);
+                let embedding = self.embed_text(&r.title, &r.content, r.tags.as_deref());
+                let updated_at = r.updated_at.clone().unwrap_or_else(|| r.date.clone());
                 stmt.execute(params![
                     r.id,
                     r.kind,
@@ -228,6 +260,11 @@ impl Store {
                     r.valid_until,
                     r.fact_key,
                     embedding,
+                    updated_at,
+                    r.accessed_count.unwrap_or(0),
+                    r.times_injected.unwrap_or(0),
+                    r.effectiveness.unwrap_or(0.5),
+                    r.tags,
                     content_digest,
                     identity,
                     epoch
@@ -249,20 +286,31 @@ impl Store {
         Ok(rows.len())
     }
 
-    /// Search active decisions across scopes and hybrid-rank them.
-    pub fn search(&self, query: &str, scopes: &[&str], limit: usize) -> Result<Vec<Decision>> {
+    /// Search active decisions across scopes and hybrid-rank them. `kinds` is an optional
+    /// type facet (`decision`/`fact`/`reference`/…); an empty slice applies no facet.
+    pub fn search(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Decision>> {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
         let placeholders = vec!["?"; scopes.len()].join(",");
+        let kind_clause = if kinds.is_empty() {
+            String::new()
+        } else {
+            format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(","))
+        };
         let sql = format!(
-            "SELECT kind,title,content,importance,source,author,commit_sha,date,embedding
+            "SELECT kind,title,content,importance,source,author,commit_sha,date,updated_at,
+                    COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
              WHERE superseded_by IS NULL AND valid_until IS NULL
-               AND scope IN ({placeholders})"
+               AND scope IN ({placeholders}){kind_clause}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let scope_params: Vec<&dyn rusqlite::ToSql> = scopes.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let mut scope_params: Vec<&dyn rusqlite::ToSql> =
+            scopes.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        for k in kinds {
+            scope_params.push(k as &dyn rusqlite::ToSql);
+        }
         let rows = stmt.query_map(scope_params.as_slice(), |r| {
             Ok(Decision {
                 kind: r.get(0)?,
@@ -273,7 +321,10 @@ impl Store {
                 author: r.get(5)?,
                 sha: r.get(6)?,
                 date: r.get(7)?,
-                embedding: parse_embedding(r.get::<_, Option<String>>(8)?),
+                updated_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                access_count: r.get(9)?,
+                effectiveness: r.get(10)?,
+                embedding: parse_embedding(r.get::<_, Option<String>>(11)?),
             })
         })?;
         let mut all = Vec::new();
@@ -323,20 +374,30 @@ impl Store {
 
     /// Search active decisions across scopes and return full records (id + temporal
     /// window) in hybrid-ranked order. Structured counterpart of `search`.
-    pub fn search_records(&self, query: &str, scopes: &[&str], limit: usize) -> Result<Vec<Record>> {
+    pub fn search_records(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Record>> {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
         let placeholders = vec!["?"; scopes.len()].join(",");
+        let kind_clause = if kinds.is_empty() {
+            String::new()
+        } else {
+            format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(","))
+        };
         let sql = format!(
             "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                    superseded_by,valid_from,valid_until,embedding
+                    superseded_by,valid_from,valid_until,updated_at,
+                    COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
              WHERE superseded_by IS NULL AND valid_until IS NULL
-               AND scope IN ({placeholders})"
+               AND scope IN ({placeholders}){kind_clause}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let scope_params: Vec<&dyn rusqlite::ToSql> = scopes.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let mut scope_params: Vec<&dyn rusqlite::ToSql> =
+            scopes.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        for k in kinds {
+            scope_params.push(k as &dyn rusqlite::ToSql);
+        }
         let rows = stmt.query_map(scope_params.as_slice(), |r| {
             Ok(Record {
                 id: r.get(0)?,
@@ -352,7 +413,10 @@ impl Store {
                 superseded_by: r.get(10)?,
                 valid_from: r.get(11)?,
                 valid_until: r.get(12)?,
-                embedding: parse_embedding(r.get::<_, Option<String>>(13)?),
+                updated_at: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+                access_count: r.get(14)?,
+                effectiveness: r.get(15)?,
+                embedding: parse_embedding(r.get::<_, Option<String>>(16)?),
             })
         })?;
         let mut all = Vec::new();
@@ -360,7 +424,17 @@ impl Store {
             all.push(row?);
         }
         let qe = self.query_embedding(query);
-        Ok(rank_by(query, qe.as_deref(), all, now_epoch(), limit, |d| (&d.title, &d.content, d.importance, &d.date, &d.kind, d.embedding.as_deref())))
+        Ok(rank_by(query, qe.as_deref(), all, now_epoch(), limit, |d| RankRow {
+            subject: &d.title,
+            body: &d.content,
+            importance: d.importance,
+            kind: &d.kind,
+            date: &d.date,
+            updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
+            access_count: d.access_count,
+            effectiveness: d.effectiveness,
+            embedding: d.embedding.as_deref(),
+        }))
     }
 
     pub fn get_record(&self, id: &str) -> Result<Option<Record>> {
@@ -386,6 +460,9 @@ impl Store {
                         superseded_by: r.get(10)?,
                         valid_from: r.get(11)?,
                         valid_until: r.get(12)?,
+                        updated_at: String::new(),
+                        access_count: 0,
+                        effectiveness: 0.5,
                         embedding: None,
                     })
                 },
@@ -447,14 +524,91 @@ impl Store {
     }
 }
 
-/// Hybrid rerank: 0.65 similarity + 0.25 importance, × Ebbinghaus recency decay.
-/// Effectiveness (0.10 in cogitod) is folded out until grading exists — it is a
-/// constant prior that never changes ordering. `similarity` is lexical-first: a
-/// pluggable embedder supplies a semantic (cosine) similarity that replaces the
-/// lexical proxy for rows that carry an embedding; rows without one keep the proxy.
-/// Decisions decay with a 2-day half-life (point-in-time), everything else 7 days.
+/// RRF fusion constant (Cormack et al. 2009), matching cogitod's `RRF_K`.
+const RRF_K: f64 = 60.0;
+/// BM25 leads the inline fusion in cogitod (arXiv 2605.15184, Table 1).
+const BM25_WEIGHT: f64 = 1.5;
+/// Hybrid rerank weights (sim / importance / effectiveness), matching cogitod.
+const RERANK_W_SIM: f64 = 0.65;
+const RERANK_W_IMPORTANCE: f64 = 0.25;
+const RERANK_W_EFFECTIVENESS: f64 = 0.10;
+/// Floor under recency decay, matching cogitod's `RECENCY_DECAY_FLOOR`: an old-but-best match
+/// must stay reachable rather than being buried to zero by age alone.
+const RECENCY_DECAY_FLOOR: f64 = 0.3;
+const RECENCY_HALF_LIFE_DAYS: f64 = 7.0;
+const RECENCY_HALF_LIFE_DECISION_DAYS: f64 = 2.0;
+/// Query-conditional recency weighting (mem0's temporal-reasoning idea), matching cogitod.
+const RECENCY_BOOST: f64 = 2.5;
+const RECENCY_SUPPRESS: f64 = 0.3;
+
+/// Ebbinghaus recency decay with a floor: `2^(-age/halfLife)`, clamped at RECENCY_DECAY_FLOOR.
+fn recency_decay(age_days: f64, half_life_days: f64) -> f64 {
+    if !(half_life_days > 0.0) || !age_days.is_finite() {
+        return RECENCY_DECAY_FLOOR;
+    }
+    (2.0f64.powf(-age_days.max(0.0) / half_life_days)).max(RECENCY_DECAY_FLOOR)
+}
+
+fn contains_word(haystack: &str, word: &str) -> bool {
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|t| t == word)
+}
+
+/// Query-conditional recency multiplier. Word-boundary match (via tokenization) so `now` does
+/// not match inside `snow`, `as of` / `used to` are phrase matches.
+fn recency_weight_for(query: &str) -> f64 {
+    let lower = query.to_lowercase();
+    const CURRENT_WORDS: &[&str] = &["current", "currently", "latest", "now", "today", "present"];
+    const PAST_WORDS: &[&str] = &[
+        "originally", "first", "initial", "initially", "previously", "formerly", "history",
+        "historical", "past", "earlier", "before",
+    ];
+    const CURRENT_PHRASES: &[&str] = &["as of", "most recent", "up to date", "up-to-date"];
+    const PAST_PHRASES: &[&str] = &["used to"];
+    if CURRENT_PHRASES.iter().any(|p| lower.contains(p))
+        || CURRENT_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return RECENCY_BOOST;
+    }
+    if PAST_PHRASES.iter().any(|p| lower.contains(p))
+        || PAST_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return RECENCY_SUPPRESS;
+    }
+    1.0
+}
+
+/// The fields `rank_by` needs per row. References borrow from the row for the duration of the
+/// scoring pass only; only primitives are copied out.
+struct RankRow<'a> {
+    subject: &'a str,
+    body: &'a str,
+    importance: f64,
+    kind: &'a str,
+    date: &'a str,
+    updated_at: Option<&'a str>,
+    access_count: i64,
+    effectiveness: f64,
+    embedding: Option<&'a [f32]>,
+}
+
+/// Hybrid rerank matching cogitod's `searchMemoriesHybrid`: reciprocal-rank fusion of a
+/// semantic arm (sorted by hybrid score) and a lexical arm (term-overlap, a BM25 proxy), then
+/// slice. Recency enters through the semantic arm's hybrid score — floored, so age cannot bury
+/// a best match — never as a multiplicative gate on the fused score.
 fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, now: i64, limit: usize) -> Vec<Decision> {
-    rank_by(query, query_embedding, rows, now, limit, |d| (&d.subject, &d.body, d.importance, &d.date, &d.kind, d.embedding.as_deref()))
+    rank_by(query, query_embedding, rows, now, limit, |d| RankRow {
+        subject: &d.subject,
+        body: &d.body,
+        importance: d.importance,
+        kind: &d.kind,
+        date: &d.date,
+        updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
+        access_count: d.access_count,
+        effectiveness: d.effectiveness,
+        embedding: d.embedding.as_deref(),
+    })
 }
 
 fn rank_by<T>(
@@ -463,35 +617,191 @@ fn rank_by<T>(
     rows: Vec<T>,
     now: i64,
     limit: usize,
-    fields: impl Fn(&T) -> (&str, &str, f64, &str, &str, Option<&[f32]>),
+    fields: impl Fn(&T) -> RankRow<'_>,
 ) -> Vec<T> {
     let words = crate::search::tokenize(query);
-    let mut scored: Vec<(f64, T)> = rows
-        .into_iter()
-        .filter_map(|d| {
-            let (subject, body, importance, date, kind, embedding) = fields(&d);
-            let lex = crate::search::score(&words, subject, body) as f64;
-            // Semantic similarity replaces the lexical proxy when both the query and the
-            // row carry an embedding; the lexical proxy remains the fallback otherwise.
-            let sim = match (query_embedding, embedding) {
-                (Some(q), Some(e)) => crate::embed::cosine(q, e) as f64,
-                _ => lex / (lex + 10.0),
+    let recency_mult = recency_weight_for(query);
+
+    // Document frequency of each query term over the candidate pool, so the lexical arm can
+    // downweight common terms the way cogitod's FTS5 BM25 idf does. Without this, a row matching
+    // only the common word "memory" outscores one matching the rarer "capability"/"engine".
+    let n_docs = rows.len().max(1);
+    let mut df = vec![0usize; words.len()];
+    for d in rows.iter() {
+        let f = fields(d);
+        let subject = f.subject.to_lowercase();
+        let body = f.body.to_lowercase();
+        for (i, w) in words.iter().enumerate() {
+            if subject.contains(w) || body.contains(w) {
+                df[i] += 1;
+            }
+        }
+    }
+    let idf: Vec<f64> = df
+        .iter()
+        .map(|&d| ((n_docs as f64 - d as f64 + 0.5) / (d as f64 + 0.5) + 1.0).ln())
+        .collect();
+
+    // Per-row score capsule. `None` = no signal.
+    struct Capsule {
+        lex: f64,
+        sim: f64,
+        embedded: bool,
+        importance: f64,
+        age_days: f64,
+        half_life: f64,
+        access_count: i64,
+        effectiveness: f64,
+    }
+    let has_query_emb = query_embedding.is_some();
+    let capsules: Vec<Option<Capsule>> = rows
+        .iter()
+        .map(|d| {
+            let f = fields(d);
+            let subject = f.subject.to_lowercase();
+            let body = f.body.to_lowercase();
+            // Unweighted overlap for the lexical proxy and the no-signal check.
+            let lex_raw = crate::search::score(&words, f.subject, f.body) as f64;
+            // Id-weighted lexical score: subject hit ×5, body hit ×1, each × idf(term).
+            let mut lex = 0.0f64;
+            for (i, w) in words.iter().enumerate() {
+                let mut tf = 0.0;
+                if subject.contains(w) {
+                    tf += 5.0;
+                }
+                if body.contains(w) {
+                    tf += 1.0;
+                }
+                lex += idf[i] * tf;
+            }
+            // Semantic similarity replaces the lexical proxy when both the query and the row
+            // carry an embedding; the lexical proxy remains the fallback otherwise.
+            let (sim, embedded) = match (query_embedding, f.embedding) {
+                (Some(q), Some(e)) => (crate::embed::cosine(q, e) as f64, true),
+                _ => (lex_raw / (lex_raw + 10.0), false),
             };
-            if lex <= 0.0 && sim <= 0.0 {
+            if lex_raw <= 0.0 && sim <= 0.0 {
                 return None;
             }
-            let mut s = 0.65 * sim + 0.25 * importance;
-            if let Some(epoch) = iso_to_epoch(date) {
-                let age_days = ((now - epoch) as f64 / 86_400.0).max(0.0);
-                let half_life = if kind == "decision" { 2.0 } else { 7.0 };
-                s *= 2.0f64.powf(-age_days / half_life);
-            }
-            Some((s, d))
+            let age_src = f.updated_at.unwrap_or(f.date);
+            let age_days = iso_to_epoch(age_src)
+                .map(|ep| ((now - ep) as f64 / 86_400.0).max(0.0))
+                .unwrap_or(0.0);
+            let half_life = if f.kind == "decision" {
+                RECENCY_HALF_LIFE_DECISION_DAYS
+            } else {
+                RECENCY_HALF_LIFE_DAYS
+            };
+            Some(Capsule {
+                lex,
+                sim,
+                embedded,
+                importance: f.importance,
+                age_days,
+                half_life,
+                access_count: f.access_count,
+                effectiveness: f.effectiveness,
+            })
         })
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
-    scored.into_iter().map(|(_, d)| d).collect()
+
+    let hybrid = |c: &Capsule| -> f64 {
+        // Ebbinghaus with spaced-repetition stability: more accesses widen the half-life, so a
+        // frequently-surfaced memory decays slower than its raw age would suggest.
+        let stability = c.half_life * (1.0 + (1.0 + c.access_count as f64).ln());
+        let decay = recency_decay(c.age_days, stability);
+        (RERANK_W_SIM * c.sim + RERANK_W_IMPORTANCE * c.importance
+            + RERANK_W_EFFECTIVENESS * c.effectiveness)
+            * decay
+            * recency_mult
+    };
+
+    let n = capsules.len();
+    let live: Vec<usize> = (0..n).filter(|&i| capsules[i].is_some()).collect();
+
+    // Semantic arm mirrors cogitod's ANN KNN: keep only the nearest-by-cosine rows (the semantic
+    // neighbourhood), then order THAT set by hybrid score. Ordering the whole corpus by hybrid
+    // score would let recency/importance crowd out semantically-far rows before fusion.
+    let semantic_order: Vec<usize> = if has_query_emb {
+        let mut embedded: Vec<usize> = live
+            .iter()
+            .copied()
+            .filter(|&i| capsules[i].as_ref().unwrap().embedded)
+            .collect();
+        embedded.sort_by(|&a, &b| {
+            capsules[b]
+                .as_ref()
+                .unwrap()
+                .sim
+                .partial_cmp(&capsules[a].as_ref().unwrap().sim)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let k = (limit.saturating_mul(30)).max(256);
+        embedded.truncate(k);
+        embedded.sort_by(|&a, &b| {
+            hybrid(capsules[b].as_ref().unwrap())
+                .partial_cmp(&hybrid(capsules[a].as_ref().unwrap()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        embedded
+    } else {
+        Vec::new()
+    };
+
+    // Lexical arm: sort by idf-weighted term-overlap, descending; tiebreak on similarity.
+    let mut lexical_order = live.clone();
+    lexical_order.sort_by(|&a, &b| {
+        let ca = capsules[a].as_ref().unwrap();
+        let cb = capsules[b].as_ref().unwrap();
+        cb.lex
+            .partial_cmp(&ca.lex)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(cb.sim.partial_cmp(&ca.sim).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    // Reciprocal rank fusion.
+    let mut scores = vec![0.0f64; n];
+    for (rank, &i) in semantic_order.iter().enumerate() {
+        scores[i] += 1.0 / (RRF_K + rank as f64 + 1.0);
+    }
+    for (rank, &i) in lexical_order.iter().enumerate() {
+        if capsules[i].as_ref().unwrap().lex > 0.0 {
+            scores[i] += BM25_WEIGHT / (RRF_K + rank as f64 + 1.0);
+        }
+    }
+
+    if std::env::var("OPEN_WHY_DEBUG_RANK").is_ok() {
+        eprintln!("[rank] query={query} live={}", live.len());
+        for (rank, &i) in semantic_order.iter().take(12).enumerate() {
+            let f = fields(&rows[i]);
+            let c = capsules[i].as_ref().unwrap();
+            eprintln!(
+                "  SEM[{rank}] sim={:.3} lex={:.2} imp={:.2} age={:.0} fused={:.5} | {}",
+                c.sim, c.lex, c.importance, c.age_days, scores[i], f.subject
+            );
+        }
+        for (rank, &i) in lexical_order.iter().take(12).enumerate() {
+            let f = fields(&rows[i]);
+            let c = capsules[i].as_ref().unwrap();
+            eprintln!(
+                "  LEX[{rank}] sim={:.3} lex={:.2} fused={:.5} | {}",
+                c.sim, c.lex, scores[i], f.subject
+            );
+        }
+    }
+
+    let mut order = live;
+    order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.truncate(limit);
+
+    let mut row_vec: Vec<Option<T>> = rows.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(order.len());
+    for i in order {
+        if let Some(r) = row_vec[i].take() {
+            out.push(r);
+        }
+    }
+    out
 }
 
 fn parse_embedding(raw: Option<String>) -> Option<Vec<f32>> {
@@ -588,11 +898,14 @@ mod tests {
             sha: String::new(),
             author: String::new(),
             date: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: String::new(),
             subject: subject.to_string(),
             body: body.to_string(),
             source: String::new(),
             importance,
             kind: "decision".to_string(),
+            access_count: 0,
+            effectiveness: 0.5,
             embedding,
         }
     }

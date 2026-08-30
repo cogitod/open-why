@@ -27,10 +27,31 @@ fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value
     })
 }
 
+/// Parse a `type` (or `types`) facet — a comma-separated string or an array of kind names.
+fn kinds_from(args: &Value) -> Vec<String> {
+    let Some(v) = args.get("type").or_else(|| args.get("types")) else {
+        return Vec::new();
+    };
+    match v {
+        Value::String(s) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn serve() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let store = db::Store::open(&db::default_path())?;
+    let store = db::Store::open_default()?;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
@@ -104,6 +125,7 @@ pub fn serve() -> Result<()> {
                                     "query": {"type": "string"},
                                     "limit": {"type": "number", "description": "default 10"},
                                     "scope": {"type": "string", "description": "default: global"},
+                                    "type": {"type": ["string", "array"], "description": "optional kind facet (decision/fact/reference/project/pattern/doc/observation; comma-separated string or array)"},
                                     "format": {"type": "string", "description": "text (default) or json (structured records with ids and temporal windows)"}
                                 }),
                                 &["query"]),
@@ -234,13 +256,14 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let query = s(args, "query").unwrap_or_default();
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
+            let kinds = kinds_from(args);
             if s(args, "format").as_deref() == Some("json") {
-                match store.search_records(&query, &[scope.as_str()], limit) {
+                match store.search_records(&query, &[scope.as_str()], &kinds, limit) {
                     Ok(records) => serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}")),
                     Err(e) => format!("error: {e:#}"),
                 }
             } else {
-                match store.search(&query, &[scope.as_str()], limit) {
+                match store.search(&query, &[scope.as_str()], &kinds, limit) {
                     Ok(hits) => render(hits),
                     Err(e) => format!("error: {e:#}"),
                 }
