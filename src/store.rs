@@ -30,7 +30,7 @@ impl Default for Decision {
 
 pub fn cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".cache").join("openwhy")
+    PathBuf::from(home).join(".cache").join("open-why")
 }
 
 pub fn scope_for(repo: &Path) -> String {

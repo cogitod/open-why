@@ -4,9 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 pub fn default_path() -> PathBuf {
-    std::env::var("OPENWHY_DB")
+    std::env::var("OPEN_WHY_DB")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| crate::store::cache_dir().join("openwhy.db"))
+        .unwrap_or_else(|_| crate::store::cache_dir().join("open-why.db"))
 }
 
 /// The "why" core store. Owns the decision record (temporal + provenance + git linkage).

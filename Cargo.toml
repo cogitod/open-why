@@ -1,5 +1,5 @@
 [package]
-name = "openwhy"
+name = "open-why"
 version = "0.1.0"
 edition = "2021"
 description = "Ask any repository why a decision was made — with the evidence."

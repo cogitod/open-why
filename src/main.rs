@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "openwhy", version, about = "Ask any repository why a decision was made — with the evidence.")]
+#[command(name = "open-why", version, about = "Ask any repository why a decision was made — with the evidence.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

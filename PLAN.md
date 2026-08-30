@@ -1,11 +1,11 @@
-# openwhy — distillation plan
+# open-why — distillation plan
 
-How openwhy is extracted from cogitod. This doc pins the *what* and the *why-not*,
+How open-why is extracted from cogitod. This doc pins the *what* and the *why-not*,
 so the build never drifts into "another agent memory layer."
 
 ## The wedge
 
-openwhy's defensible ground is **decision-recall with evidence**: answer *"why was
+open-why's defensible ground is **decision-recall with evidence**: answer *"why was
 this decision made?"* from git history + decision records, with the proof attached.
 It is **not** a general memory store.
 
@@ -58,7 +58,7 @@ golden set.
 
 ## The seam
 
-openwhy exposes a minimal verb set that cogitod (and any other agent) can call:
+open-why exposes a minimal verb set that cogitod (and any other agent) can call:
 
 `capture` · `search` · `get` · `link_git(commit, memory)` · `ask_why(question, repo)`
 
@@ -66,24 +66,24 @@ Form is an open decision (MCP-host is the lean; see Phases).
 
 ## Phases
 
-**P0 — done.** openwhy v1: git-mining "why" CLI (`init`, `why`) + MCP server
-(`openwhy_ask`, `openwhy_index`). Self-contained, no cogitod dependency.
+**P0 — done.** open-why v1: git-mining "why" CLI (`init`, `why`) + MCP server
+(`open-why_ask`, `open-why_index`). Self-contained, no cogitod dependency.
 
-**P1 — openwhy owns the "why" core.** Port A–D into a Rust SQLite store
+**P1 — open-why owns the "why" core.** Port A–D into a Rust SQLite store
 (`rusqlite`, bundled): `memories` + `valid_from/valid_until` + `memory_git_refs` +
 `memory_capture_provenance`. Port the recall ranking + temporal active-window filter.
-Wire `openwhy_capture/search/get/link/ask` into the MCP server. Lexical-first;
+Wire `open-why_capture/search/get/link/ask` into the MCP server. Lexical-first;
 embeddings deferred. **Gate:** `cargo build --release` clean; dogfood `ask_why`
 against a live corpus.
 
-**P2 — cogitod consumes openwhy.** Lock the seam form (lean: **MCP-host** — cogitod
+**P2 — cogitod consumes open-why.** Lock the seam form (lean: **MCP-host** — cogitod
 already is the hub). Migrate durable knowledge memories
-(`decision`/`fact`/`reference`/`pattern`/`doc`/`project`/`observation`) into openwhy's
+(`decision`/`fact`/`reference`/`pattern`/`doc`/`project`/`observation`) into open-why's
 store, preserving `git_refs` + temporal windows. Route cogitod's knowledge-recall
-reads through openwhy; retire the private knowledge-memory engine; keep operational
+reads through open-why; retire the private knowledge-memory engine; keep operational
 state. Verify golden-set parity before cutover.
 
-**P3 — release.** openwhy ships as the open "why" layer (CLI + MCP + lib crate);
+**P3 — release.** open-why ships as the open "why" layer (CLI + MCP + lib crate);
 cogitod stays the closed orchestration on top. Public release is pure-git + its own
 self-contained store — never a read into private Breathe data.
 
@@ -94,9 +94,9 @@ self-contained store — never a read into private Breathe data.
   fixtures, then move.
 - **Two-step read contract** (`search IDs → hydrate current`) must be preserved or
   superseded rows ghost the search.
-- **Embeddings are 65% of the rank weight in cogitod** — lexical-first openwhy ranks
+- **Embeddings are 65% of the rank weight in cogitod** — lexical-first open-why ranks
   *differently* until P2 adds vectors. Accepted for v1; call it out in the README.
 
 ## Positioning line
 
-> Mem0 and Graphiti remember *what*. openwhy remembers *why* — with the proof.
+> Mem0 and Graphiti remember *what*. open-why remembers *why* — with the proof.

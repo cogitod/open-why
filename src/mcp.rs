@@ -54,7 +54,7 @@ pub fn serve() -> Result<()> {
                     "result": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": { "tools": {} },
-                        "serverInfo": { "name": "openwhy", "version": env!("CARGO_PKG_VERSION") }
+                        "serverInfo": { "name": "open-why", "version": env!("CARGO_PKG_VERSION") }
                     }
                 });
                 write_resp(&mut stdout, &resp)?;
@@ -65,20 +65,20 @@ pub fn serve() -> Result<()> {
                     "id": id,
                     "result": {
                         "tools": [
-                            tool("openwhy_ask",
+                            tool("open-why_ask",
                                 "Ask why a decision was made in a repository. Returns evidence-bound answers (subject, author, date, commit/file).",
                                 json!({
                                     "question": {"type": "string", "description": "The 'why' question to answer"},
                                     "repo": {"type": "string", "description": "Repo path or git URL (default: current directory)"}
                                 }),
                                 &["question"]),
-                            tool("openwhy_index",
+                            tool("open-why_index",
                                 "Index a repository's decision history (commits + ADRs) into the store.",
                                 json!({
                                     "repo": {"type": "string", "description": "Repo path or git URL (default: current directory)"}
                                 }),
                                 &[]),
-                            tool("openwhy_capture",
+                            tool("open-why_capture",
                                 "Capture a decision into the store (idempotent; supersedes optional).",
                                 json!({
                                     "kind": {"type": "string", "description": "decision, fact, reference, pattern, doc, ... (default: decision)"},
@@ -91,13 +91,13 @@ pub fn serve() -> Result<()> {
                                     "supersedes": {"type": "string", "description": "id of an older decision this one supersedes"}
                                 }),
                                 &["title", "content"]),
-                            tool("openwhy_import",
+                            tool("open-why_import",
                                 "Bulk-import externally-minted decisions preserving ids, temporal windows, supersession, and git linkage.",
                                 json!({
                                     "rows": {"type": "array", "description": "array of decision records {id, kind, title, content, importance?, source?, author?, date?, scope?, valid_from?, valid_until?, superseded_by?, git_refs?:[{commit_hash, commit_subject}]}"}
                                 }),
                                 &["rows"]),
-                            tool("openwhy_search",
+                            tool("open-why_search",
                                 "Search the decision store across a scope.",
                                 json!({
                                     "query": {"type": "string"},
@@ -106,14 +106,14 @@ pub fn serve() -> Result<()> {
                                     "format": {"type": "string", "description": "text (default) or json (structured records with ids and temporal windows)"}
                                 }),
                                 &["query"]),
-                            tool("openwhy_get",
+                            tool("open-why_get",
                                 "Fetch one decision by id, with its linked commits.",
                                 json!({
                                     "id": {"type": "string"},
                                     "format": {"type": "string", "description": "text (default) or json (structured record with temporal window)"}
                                 }),
                                 &["id"]),
-                            tool("openwhy_link",
+                            tool("open-why_link",
                                 "Link a git commit to a decision (the 'why' for that commit).",
                                 json!({
                                     "commit": {"type": "string"},
@@ -163,7 +163,7 @@ pub fn serve() -> Result<()> {
 
 fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
     match name {
-        "openwhy_ask" => {
+        "open-why_ask" => {
             let question = s(args, "question").unwrap_or_default();
             let repo_arg = s(args, "repo");
             match miner::resolve_repo(repo_arg) {
@@ -174,7 +174,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 Err(e) => format!("error: {e:#}"),
             }
         }
-        "openwhy_index" => {
+        "open-why_index" => {
             let repo_arg = s(args, "repo");
             match miner::resolve_repo(repo_arg) {
                 Ok(repo) => {
@@ -187,7 +187,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 Err(e) => format!("error: {e:#}"),
             }
         }
-        "openwhy_capture" => {
+        "open-why_capture" => {
             let kind = s(args, "kind").unwrap_or_else(|| "decision".to_string());
             let title = s(args, "title");
             let content = s(args, "content");
@@ -218,7 +218,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 Err(e) => format!("error: {e:#}"),
             }
         }
-        "openwhy_import" => {
+        "open-why_import" => {
             let rows: Vec<store::ExternalDecision> = match serde_json::from_value(args.get("rows").cloned().unwrap_or(Value::Null)) {
                 Ok(rows) => rows,
                 Err(e) => return format!("error: bad rows: {e}"),
@@ -228,7 +228,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 Err(e) => format!("error: {e:#}"),
             }
         }
-        "openwhy_search" => {
+        "open-why_search" => {
             let query = s(args, "query").unwrap_or_default();
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
@@ -244,7 +244,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 }
             }
         }
-        "openwhy_get" => {
+        "open-why_get" => {
             let id = s(args, "id").unwrap_or_default();
             if s(args, "format").as_deref() == Some("json") {
                 match store.get_record(&id) {
@@ -271,7 +271,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 }
             }
         }
-        "openwhy_link" => {
+        "open-why_link" => {
             let commit = s(args, "commit").unwrap_or_default();
             let decision = s(args, "decision").unwrap_or_default();
             let subject = s(args, "subject").unwrap_or_default();

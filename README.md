@@ -1,11 +1,11 @@
-# openwhy
+# open-why
 
 **Ask any repository why a decision was made — with the evidence.**
 
-`git blame` tells you *who* changed a line and *when*. `openwhy` tells you *why* —
+`git blame` tells you *who* changed a line and *when*. `open-why` tells you *why* —
 the commit, the ADR, the author, and the rationale — as a cited answer.
 
-## Where openwhy sits
+## Where open-why sits
 
 The open-source AI-agent stack is filling in every layer except the memory:
 
@@ -16,7 +16,7 @@ The open-source AI-agent stack is filling in every layer except the memory:
 | TUI | [opentui](https://github.com/anomalyco/opentui) | see the agent |
 | Runtime | [herdr](https://herdr.dev) | where the agent lives |
 | Connectors | [open-connector](https://github.com/oomol-lab/open-connector) | reach the apps |
-| **Memory** | **openwhy** | **remember why** ← the missing layer |
+| **Memory** | **open-why** | **remember why** ← the missing layer |
 
 They all make agents *do*. None of them makes an agent (or you) *remember why*.
 
@@ -24,22 +24,22 @@ They all make agents *do*. None of them makes an agent (or you) *remember why*.
 
 Agent memory is the most crowded corner of the open stack — Mem0 (64k★),
 Zep Graphiti (30k★), Letta (24k★), Hindsight (21k★) all remember **what**
-happened. openwhy is deliberately narrow: it remembers **why**, and cites the
+happened. open-why is deliberately narrow: it remembers **why**, and cites the
 evidence (the commit, the ADR, the decision record) so you can trust the answer.
 
-> Mem0 and Graphiti remember *what*. openwhy remembers *why* — with the proof.
+> Mem0 and Graphiti remember *what*. open-why remembers *why* — with the proof.
 
 ## Quick start
 
 ```bash
 # answer "why" on any repo — no setup needed
-openwhy why "why is the sandbox separate?" --repo https://github.com/anomalyco/opencode
+open-why why "why is the sandbox separate?" --repo https://github.com/anomalyco/opencode
 
 # index the current repo explicitly
-openwhy init
+open-why init
 
 # ask a question of the current repo
-openwhy why "why do we use SQLite instead of Postgres?"
+open-why why "why do we use SQLite instead of Postgres?"
 ```
 
 ## What you get
@@ -55,7 +55,7 @@ Every answer is evidence-bound, not a guess:
 ## How it works
 
 1. `init` walks git history + ADRs + design docs and extracts decisions into a
-   local SQLite store (`~/.cache/openwhy/openwhy.db`).
+   local SQLite store (`~/.cache/open-why/open-why.db`).
 2. `why` hybrid-ranks them (lexical + importance + recency decay) and cites the
    source.
 3. `capture`, `search`, `get`, and `link` record and recall decisions beyond git.
@@ -64,15 +64,15 @@ On the roadmap: on-device embeddings (semantic ranking).
 
 ## Use as an MCP server
 
-`openwhy serve` speaks stdio MCP and exposes `openwhy_ask`, `openwhy_index`,
-`openwhy_capture`, `openwhy_search`, `openwhy_get`, and `openwhy_link`.
+`open-why serve` speaks stdio MCP and exposes `open-why_ask`, `open-why_index`,
+`open-why_capture`, `open-why_search`, `open-why_get`, and `open-why_link`.
 
 opencode (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
-"openwhy": {
+"open-why": {
   "type": "local",
-  "command": ["/path/to/openwhy/target/release/openwhy", "serve"],
+  "command": ["/path/to/open-why/target/release/open-why", "serve"],
   "enabled": true
 }
 ```
@@ -80,7 +80,7 @@ opencode (`~/.config/opencode/opencode.jsonc`):
 Claude Code / Codex (`.mcp.json` / `claude mcp add`):
 
 ```json
-{ "mcpServers": { "openwhy": { "command": "/path/to/openwhy/target/release/openwhy", "args": ["serve"] } } }
+{ "mcpServers": { "open-why": { "command": "/path/to/open-why/target/release/open-why", "args": ["serve"] } } }
 ```
 
 ## License
