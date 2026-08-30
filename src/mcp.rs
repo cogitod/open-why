@@ -88,6 +88,7 @@ pub fn serve() -> Result<()> {
                                     "scope": {"type": "string", "description": "default: global"},
                                     "id": {"type": "string", "description": "optional externally-minted id (preserved verbatim)"},
                                     "valid_from": {"type": "string", "description": "optional ISO validity start (default: now)"},
+                                    "fact_key": {"type": "string", "description": "optional stable key; re-capturing the same key retires the prior current record"},
                                     "supersedes": {"type": "string", "description": "id of an older decision this one supersedes"}
                                 }),
                                 &["title", "content"]),
@@ -198,6 +199,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
             let id = s(args, "id");
             let valid_from = s(args, "valid_from");
+            let fact_key = s(args, "fact_key");
             let supersedes = s(args, "supersedes");
             let d = store::Decision {
                 subject: title,
@@ -209,7 +211,7 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             };
             let result = match id.as_deref() {
                 Some(id) if !id.is_empty() => {
-                    store.capture_external(&d, &scope, id, valid_from.as_deref(), supersedes.as_deref())
+                    store.capture_external(&d, &scope, id, valid_from.as_deref(), fact_key.as_deref(), supersedes.as_deref())
                 }
                 _ => store.capture(&d, &scope, supersedes.as_deref()),
             };

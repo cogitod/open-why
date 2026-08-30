@@ -98,5 +98,7 @@ pub struct ExternalDecision {
     #[serde(default)]
     pub superseded_by: Option<String>,
     #[serde(default)]
+    pub fact_key: Option<String>,
+    #[serde(default)]
     pub git_refs: Vec<GitRef>,
 }

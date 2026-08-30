@@ -54,6 +54,9 @@ enum Command {
         /// Optional ISO validity start (default: now)
         #[arg(long)]
         valid_from: Option<String>,
+        /// Optional stable key; re-capturing the same key retires the prior current record
+        #[arg(long)]
+        fact_key: Option<String>,
         /// Id of an older decision this one supersedes
         #[arg(long)]
         supersedes: Option<String>,
@@ -114,6 +117,7 @@ fn main() -> Result<()> {
             scope,
             id,
             valid_from,
+            fact_key,
             supersedes,
         } => {
             let store = db::Store::open(&db::default_path())?;
@@ -128,7 +132,7 @@ fn main() -> Result<()> {
             };
             let result = match id.as_deref() {
                 Some(id) if !id.is_empty() => {
-                    store.capture_external(&d, &scope, id, valid_from.as_deref(), supersedes.as_deref())
+                    store.capture_external(&d, &scope, id, valid_from.as_deref(), fact_key.as_deref(), supersedes.as_deref())
                 }
                 _ => store.capture(&d, &scope, supersedes.as_deref()),
             };

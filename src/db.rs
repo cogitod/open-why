@@ -41,6 +41,7 @@ impl Store {
                 superseded_by TEXT,
                 valid_from TEXT,
                 valid_until TEXT,
+                fact_key TEXT,
                 content_digest TEXT NOT NULL,
                 source_identity TEXT NOT NULL,
                 created_epoch INTEGER NOT NULL DEFAULT 0
@@ -56,19 +57,20 @@ impl Store {
                 PRIMARY KEY (decision_id, commit_hash)
              );",
         )?;
-        self.ensure_valid_from()?;
+        self.ensure_column("valid_from", "TEXT")?;
+        self.ensure_column("fact_key", "TEXT")?;
         Ok(())
     }
 
-    /// Backward-compatible column add for stores created before `valid_from` existed.
-    fn ensure_valid_from(&self) -> Result<()> {
+    /// Backward-compatible column add for stores created before `column` existed.
+    fn ensure_column(&self, column: &str, ty: &str) -> Result<()> {
         let has: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE name='valid_from'",
-            [],
+            "SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE name=?1",
+            params![column],
             |r| r.get(0),
         )?;
         if has == 0 {
-            self.conn.execute_batch("ALTER TABLE decisions ADD COLUMN valid_from TEXT;")?;
+            self.conn.execute_batch(&format!("ALTER TABLE decisions ADD COLUMN {column} {ty};"))?;
         }
         Ok(())
     }
@@ -110,12 +112,15 @@ impl Store {
     /// Capture a decision with an externally-minted id (a cogitod memory UUID) and an
     /// explicit validity start. Idempotent by the external id: re-capturing the same id
     /// returns it without a duplicate. `supersedes` retires an older decision.
+    /// `fact_key` and title matches retire the current same-key / same-title record
+    /// (point-in-time supersession, mirroring cogitod's keyed + title predecessor rule).
     pub fn capture_external(
         &self,
         d: &Decision,
         scope: &str,
         id: &str,
         valid_from: Option<&str>,
+        fact_key: Option<&str>,
         supersedes: Option<&str>,
     ) -> Result<String> {
         let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
@@ -125,24 +130,47 @@ impl Store {
         let now_str = epoch_to_iso(now);
         let vfrom = valid_from.map(String::from).unwrap_or_else(|| now_str.clone());
         let identity = format!("external:{scope}:{id}");
+        let fact_key = fact_key.filter(|k| !k.is_empty()).map(String::from);
         self.conn.execute(
             "INSERT OR IGNORE INTO decisions
                (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                valid_from, content_digest, source_identity, created_epoch)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                valid_from, fact_key, content_digest, source_identity, created_epoch)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
-                now_str, scope, vfrom, content_digest, identity, now
+                now_str, scope, vfrom, fact_key, content_digest, identity, now
             ],
         )?;
-        if let Some(sid) = supersedes {
-            if !sid.is_empty() {
-                self.conn.execute(
-                    "UPDATE decisions SET superseded_by=?1, valid_until=?2
-                     WHERE id=?3 AND superseded_by IS NULL",
-                    params![id, now_str, sid],
-                )?;
-            }
+        // Retire predecessors: the explicit supersedes id, then any current record that
+        // shares the fact_key or the (kind, title) — the same rule cogitod applies.
+        let mut predecessors: Vec<String> = supersedes
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .into_iter()
+            .collect();
+        let keyed: Vec<String> = match fact_key.as_deref() {
+            Some(key) => self.conn.prepare(
+                "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND fact_key=?3
+                   AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
+            )?.query_map(params![scope, d.kind, key, id], |r| r.get(0))?
+                .filter_map(|r| r.ok()).collect(),
+            None => Vec::new(),
+        };
+        let titled: Vec<String> = self.conn.prepare(
+            "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND title=?3
+               AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
+        )?.query_map(params![scope, d.kind, d.subject, id], |r| r.get(0))?
+            .filter_map(|r| r.ok()).collect();
+        predecessors.extend(keyed);
+        predecessors.extend(titled);
+        predecessors.sort();
+        predecessors.dedup();
+        for old in predecessors {
+            self.conn.execute(
+                "UPDATE decisions SET superseded_by=?1, valid_until=?2
+                 WHERE id=?3 AND superseded_by IS NULL",
+                params![id, now_str, old],
+            )?;
         }
         Ok(id.to_string())
     }
@@ -155,8 +183,8 @@ impl Store {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO decisions
                    (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                    superseded_by, valid_from, valid_until, content_digest, source_identity, created_epoch)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15)",
+                    superseded_by, valid_from, valid_until, fact_key, content_digest, source_identity, created_epoch)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             )?;
             for r in rows {
                 let content_digest = digest(&format!("{}\n{}", r.title, r.content));
@@ -175,6 +203,7 @@ impl Store {
                     r.superseded_by,
                     r.valid_from,
                     r.valid_until,
+                    r.fact_key,
                     content_digest,
                     identity,
                     epoch
