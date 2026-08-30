@@ -1,0 +1,79 @@
+{
+  "description": "Golden retrieval parity set: cogitod (production TS engine) is the reference. Each query records the top-1 memory cogitod's mem_search returned against the live durable corpus (project_id=1), captured 2026-08-30. The `why-golden` runner checks open-why's top-1 matches by id (the memory UUID is preserved verbatim through the mirror).",
+  "scope": "1",
+  "captured_at": "2026-08-30T06:44:00Z",
+  "queries": [
+    {
+      "query": "worktree node_modules symlink corruption",
+      "types": ["fact", "decision"],
+      "expected": {
+        "id": "737F18EF-F0DC-47FA-867C-0CC3A23BFA6F",
+        "title": "cogitod owns lane lifecycle and reaps hand-made worktrees",
+        "type": "fact"
+      }
+    },
+    {
+      "query": "memory capability map engine capture wiring gap",
+      "types": [],
+      "expected": {
+        "id": "077A4752-3FAC-4998-8CFC-2A0202CD04F8",
+        "title": "Cogito memory capability map — engine is real, capture wiring is the gap",
+        "type": "reference"
+      }
+    },
+    {
+      "query": "TencentDB agent memory harvest what is already in cogitod",
+      "types": [],
+      "expected": {
+        "id": "19949902-D60C-41D0-8232-AF55DCBF9F7F",
+        "title": "TencentDB-Agent-Memory harvest: what is already in cogitod and what is not",
+        "type": "project"
+      }
+    },
+    {
+      "query": "sqlite writer gate database ownership runtime profile",
+      "types": [],
+      "expected": {
+        "id": "D72B99B1-A684-4896-8159-9BE3C2AB70F6",
+        "title": "SQLite writer gate required for bundle smoke testing",
+        "type": "fact"
+      }
+    },
+    {
+      "query": "screenpipe rewind capture no daily hook failure mode",
+      "types": [],
+      "expected": {
+        "id": "12EDE32E-7E5C-4772-80B9-C261C1262F4A",
+        "title": "Screenpipe + Rewind = same failure mode (capture tech, no daily hook)",
+        "type": "decision"
+      }
+    },
+    {
+      "query": "lane phantom failure symlink node_modules mise exec",
+      "types": ["fact"],
+      "expected": {
+        "id": "16D768A1-5A3C-451D-AD19-BCF290740A05",
+        "title": "Cogitod lane bootstrap contracts hardened",
+        "type": "fact"
+      }
+    },
+    {
+      "query": "latest lane policy rebase ship small",
+      "types": [],
+      "expected": {
+        "id": "A27F35D2-90C4-4DBF-B3F3-AC6553814E8F",
+        "title": "Lifecycle enforcement policy: block shared tree, warn lanes, sync steers",
+        "type": "decision"
+      }
+    },
+    {
+      "query": "cogitod database ownership runtime profile isolated sqlite writers",
+      "types": [],
+      "expected": {
+        "id": "14F27A2C-4B90-4DA4-A579-BF8095C4D1B9",
+        "title": "Cogitod release-graph and runtime-profile restructure is active",
+        "type": "fact"
+      }
+    }
+  ]
+}
