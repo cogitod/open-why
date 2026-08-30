@@ -1,95 +1,27 @@
+/// FTS5 stopwords — high-frequency tokens that match nearly the whole corpus.
+/// Mirrors cogitod's `FTS_STOPWORDS` in `MemorySearchUtils.ts`, so the lexical arm
+/// tokenizes identically to the TS engine it distills.
+const FTS_STOPWORDS: &[&str] = &[
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is", "are",
+    "was", "were", "be", "been", "with", "as", "at", "by", "it", "its", "this",
+    "that", "these", "those", "from", "we", "you", "i", "can", "will", "do",
+    "does", "how", "what", "why", "when", "our", "your", "my", "so", "if", "but",
+    "not", "no", "all", "any", "into", "out", "up", "down", "about", "over",
+];
+
+/// Deduplicated, stopword-filtered search terms — the exact equivalent of cogitod's
+/// `toSearchTerms`: lowercase, extract `/[a-z0-9_]+/` runs, dedupe, drop single-char
+/// tokens and FTS5 stopwords. Note `_` is a token char (so `node_modules` stays one term),
+/// unlike a naive non-alphanumeric split.
 pub(crate) fn tokenize(question: &str) -> Vec<String> {
-    let mut seen = Vec::new();
-    for w in question
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .filter(|w| !is_stopword(w))
+    let mut seen: Vec<String> = Vec::new();
+    for term in question
+        .to_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
     {
-        if !seen.contains(&w) {
-            seen.push(w);
+        if term.len() > 1 && !FTS_STOPWORDS.contains(&term) && !seen.iter().any(|s| s == term) {
+            seen.push(term.to_string());
         }
     }
     seen
-}
-
-/// Lexical term-overlap score: a subject hit is worth 5, a body hit 1.
-/// Unbounded — db.rs normalizes it into a similarity proxy before blending.
-pub(crate) fn score(words: &[String], subject: &str, body: &str) -> i64 {
-    let subject = subject.to_lowercase();
-    let body = body.to_lowercase();
-    let mut s = 0i64;
-    for w in words {
-        if subject.contains(w) {
-            s += 5;
-        }
-        if body.contains(w) {
-            s += 1;
-        }
-    }
-    s
-}
-
-fn is_stopword(w: &str) -> bool {
-    matches!(
-        w,
-        "a" | "an"
-            | "the"
-            | "of"
-            | "to"
-            | "in"
-            | "and"
-            | "or"
-            | "for"
-            | "on"
-            | "with"
-            | "is"
-            | "are"
-            | "was"
-            | "were"
-            | "be"
-            | "been"
-            | "being"
-            | "why"
-            | "what"
-            | "how"
-            | "when"
-            | "where"
-            | "which"
-            | "who"
-            | "use"
-            | "used"
-            | "using"
-            | "does"
-            | "do"
-            | "did"
-            | "make"
-            | "made"
-            | "instead"
-            | "than"
-            | "that"
-            | "this"
-            | "these"
-            | "those"
-            | "it"
-            | "its"
-            | "we"
-            | "our"
-            | "your"
-            | "my"
-            | "i"
-            | "not"
-            | "but"
-            | "as"
-            | "at"
-            | "by"
-            | "from"
-            | "into"
-            | "about"
-            | "should"
-            | "would"
-            | "could"
-            | "will"
-            | "can"
-    )
 }
