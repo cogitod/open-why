@@ -57,6 +57,10 @@ Four primitives, each small and composable:
   that keeps being the right answer stays findable.
 - **Capture provenance** — `content_digest` + `source_identity` make capture
   idempotent and de-duplicated by content.
+- **The learning loop** — `why feedback <id> --helpful` / `--not-helpful` folds a
+  verdict into the record's effectiveness (a 0.05 raise / 0.03 drop on the
+  ungraded 0.5 prior, clamped to `[0.01, 1.0]`), so recall quality improves from
+  usage rather than from hand-tuning.
 
 Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
 `project`, `observation` — so recall can be scoped by type as well as by query.
@@ -79,6 +83,8 @@ why search "sqlite" --types decision,fact
 why get <id>
 why link <commit> <decision>
 why import --file decisions.json
+why feedback <id> --helpful      # raise a decision's effectiveness
+why feedback <id> --not-helpful  # lower it
 why serve          # MCP stdio
 ```
 

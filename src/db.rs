@@ -111,6 +111,17 @@ impl Store {
         self.ensure_column("times_injected", "INTEGER NOT NULL DEFAULT 0")?;
         self.ensure_column("effectiveness", "REAL NOT NULL DEFAULT 0.5")?;
         self.ensure_column("tags", "TEXT")?;
+        self.ensure_column("times_helpful", "INTEGER NOT NULL DEFAULT 0")?;
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS feedback_log (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                helpful INTEGER NOT NULL,
+                delta REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE INDEX IF NOT EXISTS idx_feedback_log_memory ON feedback_log(memory_id);",
+        )?;
         self.ensure_fts()?;
         Ok(())
     }
@@ -676,6 +687,36 @@ impl Store {
         )?;
         Ok(n as usize)
     }
+
+    /// Record explicit retrieval feedback on a decision — the closing half of the usage→quality
+    /// loop. A helpful verdict raises the record's effectiveness and a not-helpful verdict lowers
+    /// it, mirroring cogitod's `context_retrieval_feedback` `FEEDBACK_SET_SQL`: the delta lands on
+    /// the effective value (ungraded prior 0.5), clamped to `[0.01, 1.0]`, and `updated_at` is
+    /// bumped so the verdict also moves recency. Returns the new effectiveness, or `None` when the
+    /// id is unknown or superseded.
+    pub fn feedback(&self, id: &str, helpful: bool) -> Result<Option<f64>> {
+        let delta = if helpful { 0.05 } else { -0.03 };
+        let updated = self.conn.execute(
+            "UPDATE decisions SET
+               times_helpful = COALESCE(times_helpful, 0) + ?1,
+               effectiveness = MIN(1.0, MAX(0.01, effectiveness + ?2)),
+               updated_at = datetime('now')
+             WHERE id = ?3 AND superseded_by IS NULL",
+            params![if helpful { 1 } else { 0 }, delta, id],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        let log_id = digest(&format!("{id}:{helpful}:{}", now_epoch()));
+        self.conn.execute(
+            "INSERT INTO feedback_log (id, memory_id, helpful, delta) VALUES (?1,?2,?3,?4)",
+            params![log_id, id, if helpful { 1 } else { 0 }, delta],
+        )?;
+        let eff: f64 = self
+            .conn
+            .query_row("SELECT effectiveness FROM decisions WHERE id=?1", params![id], |r| r.get(0))?;
+        Ok(Some(eff))
+    }
 }
 
 /// RRF fusion constant (Cormack et al. 2009), matching cogitod's `RRF_K`.
@@ -1129,5 +1170,21 @@ mod tests {
             .unwrap();
         let hits = store.search("worktree corruption", &["global"], &[], 10).unwrap();
         assert_eq!(hits[0].subject, "worktree corruption");
+    }
+
+    #[test]
+    fn feedback_moves_effectiveness_and_is_clamped() {
+        let store = temp_store();
+        let id = store
+            .capture(&decision("use sqlite", "single file local-first", 0.5, None), "global", None)
+            .unwrap();
+        // Ungraded prior is 0.5; a helpful verdict raises it by 0.05.
+        let eff = store.feedback(&id, true).unwrap().unwrap();
+        assert!((eff - 0.55).abs() < 1e-9, "expected 0.55, got {eff}");
+        // A not-helpful verdict lowers it by 0.03.
+        let eff = store.feedback(&id, false).unwrap().unwrap();
+        assert!((eff - 0.52).abs() < 1e-9, "expected 0.52, got {eff}");
+        // Unknown id returns None and records nothing.
+        assert!(store.feedback("no-such-id", true).unwrap().is_none());
     }
 }
