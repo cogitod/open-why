@@ -1144,12 +1144,13 @@ mod tests {
         }
     }
 
+    static TMP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     fn temp_store() -> Store {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("open-why-test-{}-{nanos}", std::process::id()));
+        // A monotonic counter guarantees a unique dir even when parallel tests collide on the
+        // same nanosecond timestamp.
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("open-why-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Store::open_with_embedder(&dir.join("t.db"), None).unwrap()
     }
