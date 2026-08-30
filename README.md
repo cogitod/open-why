@@ -165,10 +165,18 @@ Both engines are run against the same corpus (open-why's store is a mirror of
 cogitod's durable memories) and the same local embedder. The reference answer is
 captured, not computed live, so the check is a deterministic regression gate.
 
-Known gap (2026-08-30): strong semantic anchors match exactly, but lexical-heavy
-multi-term queries diverge — open-why reimplements BM25 (idf/avgdl over the
-candidate pool, custom tokenizer) while cogitod calls SQLite FTS5 `bm25()` over an
-external-content index. The path to exact parity is a native FTS5 virtual table.
+The lexical arm is a native SQLite FTS5 external-content table
+(`decisions_fts`, columns `scope/title/content/tags`, ranked by
+`bm25(decisions_fts, 0, 10, 5, 1)`) — the same engine cogitod's
+`MemoryRepository.lexicalSearchIds` calls, including its narrow-then-broad
+AND→OR heuristic and its `toSearchTerms` tokenization (`[a-z0-9_]+`, FTS5
+stopwords).
+
+Known gap (2026-08-30): 4/8 golden exact. The remaining misses are fuzzy
+multi-concept queries where cogitod's post-fusion **relevance gate**
+(`MemoryRelevanceGate`: similarity floor + `RAG_UTILITY_THRESHOLD` lexical
+utility) drops near-miss rows that open-why still returns. Porting that gate is
+the next parity step, tracked as a separate work item.
 
 ## Build
 

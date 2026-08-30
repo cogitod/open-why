@@ -2,6 +2,7 @@ use crate::store::{Decision, ExternalDecision, Record};
 use crate::embed::Embedder;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub fn default_path() -> PathBuf {
@@ -110,6 +111,62 @@ impl Store {
         self.ensure_column("times_injected", "INTEGER NOT NULL DEFAULT 0")?;
         self.ensure_column("effectiveness", "REAL NOT NULL DEFAULT 0.5")?;
         self.ensure_column("tags", "TEXT")?;
+        self.ensure_fts()?;
+        Ok(())
+    }
+
+    /// Native FTS5 lexical index, mirroring cogitod's `memories_fts` external-content table
+    /// (migrations 001/044/049): columns `scope, title, content, tags`, synced by triggers,
+    /// ranked by `bm25(decisions_fts, 0, 10, 5, 1)` — scope weight 0, title 10, content 5,
+    /// tags 1. This makes the lexical arm byte-for-byte the same engine the TS side calls.
+    fn ensure_fts(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+               scope, title, content, tags,
+               content=decisions, content_rowid=rowid
+             );",
+        )?;
+        self.ensure_fts_triggers()?;
+        // Backfill stores created before the FTS index existed. Detect it by the inverted
+        // index being empty while the content table has rows — the FTS5 external-content
+        // `'rebuild'` command is unreliable against a TEXT-primary-key content table, so
+        // backfill with the same explicit insert shape the triggers use.
+        let idx_count: i64 = self.conn.query_row("SELECT count(*) FROM decisions_fts_idx", [], |r| r.get(0))?;
+        let content_count: i64 = self.conn.query_row("SELECT count(*) FROM decisions", [], |r| r.get(0))?;
+        if idx_count == 0 && content_count > 0 {
+            self.conn.execute_batch(
+                "DROP TABLE IF EXISTS decisions_fts;
+                 CREATE VIRTUAL TABLE decisions_fts USING fts5(
+                   scope, title, content, tags,
+                   content=decisions, content_rowid=rowid
+                 );",
+            )?;
+            self.ensure_fts_triggers()?;
+            self.conn.execute_batch(
+                "INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+                 SELECT rowid, scope, title, content, tags FROM decisions;",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ensure_fts_triggers(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS decisions_fts_ai AFTER INSERT ON decisions BEGIN
+               INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+               VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+             END;
+             CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
+               INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+               VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+             END;
+             CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
+               INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+               VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+               INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+               VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+             END;",
+        )?;
         Ok(())
     }
 
@@ -292,6 +349,15 @@ impl Store {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
+        let (rows, rowids) = self.select_decisions(scopes, kinds)?;
+        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit)?;
+        let qe = self.query_embedding(query);
+        Ok(rank(query, qe.as_deref(), rows, lexical, now_epoch(), limit))
+    }
+
+    /// Fetch active candidate rows with their integer rowids, in scope and kind order. The
+    /// rowid is the join key between the semantic candidates and the FTS5 lexical index.
+    fn select_decisions(&self, scopes: &[&str], kinds: &[String]) -> Result<(Vec<Decision>, Vec<i64>)> {
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -299,7 +365,7 @@ impl Store {
             format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(","))
         };
         let sql = format!(
-            "SELECT kind,title,content,importance,source,author,commit_sha,date,updated_at,
+            "SELECT rowid,kind,title,content,importance,source,author,commit_sha,date,updated_at,
                     COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
              WHERE superseded_by IS NULL AND valid_until IS NULL
@@ -312,27 +378,105 @@ impl Store {
             scope_params.push(k as &dyn rusqlite::ToSql);
         }
         let rows = stmt.query_map(scope_params.as_slice(), |r| {
-            Ok(Decision {
-                kind: r.get(0)?,
-                subject: r.get(1)?,
-                body: r.get(2)?,
-                importance: r.get(3)?,
-                source: r.get(4)?,
-                author: r.get(5)?,
-                sha: r.get(6)?,
-                date: r.get(7)?,
-                updated_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                access_count: r.get(9)?,
-                effectiveness: r.get(10)?,
-                embedding: parse_embedding(r.get::<_, Option<String>>(11)?),
-            })
+            Ok((
+                r.get::<_, i64>(0)?,
+                Decision {
+                    kind: r.get(1)?,
+                    subject: r.get(2)?,
+                    body: r.get(3)?,
+                    importance: r.get(4)?,
+                    source: r.get(5)?,
+                    author: r.get(6)?,
+                    sha: r.get(7)?,
+                    date: r.get(8)?,
+                    updated_at: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                    access_count: r.get(10)?,
+                    effectiveness: r.get(11)?,
+                    embedding: parse_embedding(r.get::<_, Option<String>>(12)?),
+                },
+            ))
         })?;
-        let mut all = Vec::new();
+        let mut decisions = Vec::new();
+        let mut rowids = Vec::new();
         for row in rows {
-            all.push(row?);
+            let (rowid, d) = row?;
+            rowids.push(rowid);
+            decisions.push(d);
         }
-        let qe = self.query_embedding(query);
-        Ok(rank(query, qe.as_deref(), all, now_epoch(), limit))
+        Ok((decisions, rowids))
+    }
+
+    /// Lexical arm ordering: the rowids of the FTS5 `bm25()` best-first match, narrow-then-broad,
+    /// mapped to indices into `rowids`. Mirrors cogitod's `lexicalSearchIds` + RRF position.
+    fn lexical_indices(
+        &self,
+        query: &str,
+        rowids: &[i64],
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+    ) -> Result<Vec<usize>> {
+        let index: HashMap<i64, usize> = rowids.iter().enumerate().map(|(i, &r)| (r, i)).collect();
+        let ordered = self.lexical_rowids(query, scopes, kinds, limit)?;
+        Ok(ordered.iter().filter_map(|r| index.get(r).copied()).collect())
+    }
+
+    /// Run the FTS5 lexical query (narrow-then-broad over quoted terms) and return the matched
+    /// rowids ordered by `bm25(decisions_fts, 0, 10, 5, 1)`. This is the exact engine cogitod's
+    /// `MemoryRepository.lexicalSearchIds` runs, so parity is a query shape, not a re-derivation.
+    fn lexical_rowids(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<i64>> {
+        let terms = crate::search::tokenize(query);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t.replace('"', ""))).collect();
+        let narrow_floor = limit.min(5);
+        let overfetch = limit.saturating_mul(10).max(limit);
+
+        let placeholders = vec!["?"; scopes.len()].join(",");
+        let kind_clause = if kinds.is_empty() {
+            String::new()
+        } else {
+            format!(" AND d.kind IN ({})", vec!["?"; kinds.len()].join(","))
+        };
+        let sql = format!(
+            "SELECT d.rowid FROM decisions_fts
+             JOIN decisions d ON d.rowid = decisions_fts.rowid
+             WHERE decisions_fts MATCH ?1
+               AND d.superseded_by IS NULL AND d.valid_until IS NULL
+               AND d.scope IN ({placeholders}){kind_clause}
+             ORDER BY bm25(decisions_fts, 0, 10, 5, 1)
+             LIMIT ?"
+        );
+
+        let run = |match_expr: &str| -> Result<Vec<i64>> {
+            let mut stmt = self.conn.prepare(&sql)?;
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            params.push(Box::new(match_expr.to_string()));
+            for s in scopes {
+                params.push(Box::new((*s).to_string()));
+            }
+            for k in kinds {
+                params.push(Box::new(k.clone()));
+            }
+            params.push(Box::new(overfetch as i64));
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, i64>(0))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        };
+
+        if quoted.len() > 1 {
+            let narrow = run(&quoted.join(" AND "))?;
+            if narrow.len() >= narrow_floor {
+                return Ok(narrow);
+            }
+            return run(&format!("({})", quoted.join(" OR ")));
+        }
+        run(&quoted.join(" OR "))
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Decision>> {
@@ -378,6 +522,21 @@ impl Store {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
+        let (rows, rowids) = self.select_records(scopes, kinds)?;
+        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit)?;
+        let qe = self.query_embedding(query);
+        Ok(rank_by(query, qe.as_deref(), rows, lexical, now_epoch(), limit, |d| RankRow {
+            importance: d.importance,
+            kind: &d.kind,
+            date: &d.date,
+            updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
+            access_count: d.access_count,
+            effectiveness: d.effectiveness,
+            embedding: d.embedding.as_deref(),
+        }))
+    }
+
+    fn select_records(&self, scopes: &[&str], kinds: &[String]) -> Result<(Vec<Record>, Vec<i64>)> {
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -385,7 +544,7 @@ impl Store {
             format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(","))
         };
         let sql = format!(
-            "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
+            "SELECT rowid,id,kind,title,content,importance,source,author,commit_sha,date,scope,
                     superseded_by,valid_from,valid_until,updated_at,
                     COALESCE(accessed_count,0)+COALESCE(times_injected,0), effectiveness, embedding
              FROM decisions
@@ -399,42 +558,37 @@ impl Store {
             scope_params.push(k as &dyn rusqlite::ToSql);
         }
         let rows = stmt.query_map(scope_params.as_slice(), |r| {
-            Ok(Record {
-                id: r.get(0)?,
-                kind: r.get(1)?,
-                title: r.get(2)?,
-                content: r.get(3)?,
-                importance: r.get(4)?,
-                source: r.get(5)?,
-                author: r.get(6)?,
-                commit_sha: r.get(7)?,
-                date: r.get(8)?,
-                scope: r.get(9)?,
-                superseded_by: r.get(10)?,
-                valid_from: r.get(11)?,
-                valid_until: r.get(12)?,
-                updated_at: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
-                access_count: r.get(14)?,
-                effectiveness: r.get(15)?,
-                embedding: parse_embedding(r.get::<_, Option<String>>(16)?),
-            })
+            Ok((
+                r.get::<_, i64>(0)?,
+                Record {
+                    id: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    content: r.get(4)?,
+                    importance: r.get(5)?,
+                    source: r.get(6)?,
+                    author: r.get(7)?,
+                    commit_sha: r.get(8)?,
+                    date: r.get(9)?,
+                    scope: r.get(10)?,
+                    superseded_by: r.get(11)?,
+                    valid_from: r.get(12)?,
+                    valid_until: r.get(13)?,
+                    updated_at: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
+                    access_count: r.get(15)?,
+                    effectiveness: r.get(16)?,
+                    embedding: parse_embedding(r.get::<_, Option<String>>(17)?),
+                },
+            ))
         })?;
-        let mut all = Vec::new();
+        let mut records = Vec::new();
+        let mut rowids = Vec::new();
         for row in rows {
-            all.push(row?);
+            let (rowid, rec) = row?;
+            rowids.push(rowid);
+            records.push(rec);
         }
-        let qe = self.query_embedding(query);
-        Ok(rank_by(query, qe.as_deref(), all, now_epoch(), limit, |d| RankRow {
-            subject: &d.title,
-            body: &d.content,
-            importance: d.importance,
-            kind: &d.kind,
-            date: &d.date,
-            updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
-            access_count: d.access_count,
-            effectiveness: d.effectiveness,
-            embedding: d.embedding.as_deref(),
-        }))
+        Ok((records, rowids))
     }
 
     pub fn get_record(&self, id: &str) -> Result<Option<Record>> {
@@ -528,12 +682,6 @@ impl Store {
 const RRF_K: f64 = 60.0;
 /// BM25 leads the inline fusion in cogitod (arXiv 2605.15184, Table 1).
 const BM25_WEIGHT: f64 = 1.5;
-/// FTS5 BM25 saturation (k1) and length-normalisation (b) defaults, matching cogitod's
-/// `bm25(memories_fts, 0, 10, 5, 1)` — title ×10, content ×5, tags ×1.
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
-const BM25_TITLE_W: f64 = 10.0;
-const BM25_CONTENT_W: f64 = 5.0;
 /// Hybrid rerank weights (sim / importance / effectiveness), matching cogitod.
 const RERANK_W_SIM: f64 = 0.65;
 const RERANK_W_IMPORTANCE: f64 = 0.25;
@@ -559,20 +707,6 @@ fn contains_word(haystack: &str, word: &str) -> bool {
     haystack
         .split(|c: char| !c.is_alphanumeric())
         .any(|t| t == word)
-}
-
-fn count_word(haystack: &str, word: &str) -> usize {
-    haystack
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| *t == word)
-        .count()
-}
-
-fn doc_len(haystack: &str) -> usize {
-    haystack
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .count()
 }
 
 /// Query-conditional recency multiplier. Word-boundary match (via tokenization) so `now` does
@@ -602,8 +736,6 @@ fn recency_weight_for(query: &str) -> f64 {
 /// The fields `rank_by` needs per row. References borrow from the row for the duration of the
 /// scoring pass only; only primitives are copied out.
 struct RankRow<'a> {
-    subject: &'a str,
-    body: &'a str,
     importance: f64,
     kind: &'a str,
     date: &'a str,
@@ -614,13 +746,12 @@ struct RankRow<'a> {
 }
 
 /// Hybrid rerank matching cogitod's `searchMemoriesHybrid`: reciprocal-rank fusion of a
-/// semantic arm (sorted by hybrid score) and a lexical arm (term-overlap, a BM25 proxy), then
-/// slice. Recency enters through the semantic arm's hybrid score — floored, so age cannot bury
-/// a best match — never as a multiplicative gate on the fused score.
-fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, now: i64, limit: usize) -> Vec<Decision> {
-    rank_by(query, query_embedding, rows, now, limit, |d| RankRow {
-        subject: &d.subject,
-        body: &d.body,
+/// semantic arm (sorted by hybrid score) and a lexical arm (the FTS5 `bm25()` order supplied by
+/// the caller, already narrow-then-broad), then slice. Recency enters through the semantic arm's
+/// hybrid score — floored, so age cannot bury a best match — never as a multiplicative gate on
+/// the fused score.
+fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, lexical_order: Vec<usize>, now: i64, limit: usize) -> Vec<Decision> {
+    rank_by(query, query_embedding, rows, lexical_order, now, limit, |d| RankRow {
         importance: d.importance,
         kind: &d.kind,
         date: &d.date,
@@ -635,40 +766,16 @@ fn rank_by<T>(
     query: &str,
     query_embedding: Option<&[f32]>,
     rows: Vec<T>,
+    lexical_order: Vec<usize>,
     now: i64,
     limit: usize,
     fields: impl Fn(&T) -> RankRow<'_>,
 ) -> Vec<T> {
-    let words = crate::search::tokenize(query);
     let recency_mult = recency_weight_for(query);
 
-    // Document frequency of each query term over the candidate pool, so the lexical arm can
-    // downweight common terms the way cogitod's FTS5 BM25 idf does. Without this, a row matching
-    // only the common word "memory" outscores one matching the rarer "capability"/"engine".
-    let n_docs = rows.len().max(1);
-    let mut df = vec![0usize; words.len()];
-    let mut total_len = 0usize;
-    for d in rows.iter() {
-        let f = fields(d);
-        let subject = f.subject.to_lowercase();
-        let body = f.body.to_lowercase();
-        total_len += doc_len(&subject) + doc_len(&body);
-        for (i, w) in words.iter().enumerate() {
-            if subject.contains(w) || body.contains(w) {
-                df[i] += 1;
-            }
-        }
-    }
-    let avgdl = total_len as f64 / n_docs as f64;
-    // FTS5 bm25 idf: ln((N - n + 0.5) / (n + 0.5)).
-    let idf: Vec<f64> = df
-        .iter()
-        .map(|&d| ((n_docs as f64 - d as f64 + 0.5) / (d as f64 + 0.5)).ln())
-        .collect();
-
-    // Per-row score capsule. `None` = no signal.
+    // Semantic score capsule. The lexical arm is the native FTS5 bm25() order supplied by the
+    // caller; this computes only what the semantic arm needs.
     struct Capsule {
-        lex: f64,
         sim: f64,
         embedded: bool,
         importance: f64,
@@ -676,43 +783,16 @@ fn rank_by<T>(
         half_life: f64,
         access_count: i64,
         effectiveness: f64,
-        all_terms: bool,
     }
     let has_query_emb = query_embedding.is_some();
-    let capsules: Vec<Option<Capsule>> = rows
+    let capsules: Vec<Capsule> = rows
         .iter()
         .map(|d| {
             let f = fields(d);
-            let subject = f.subject.to_lowercase();
-            let body = f.body.to_lowercase();
-            // Every distinct query term appears in the searchable text — the "narrow"
-            // (all-terms) arm of cogitod's narrow-then-broad heuristic.
-            let all_terms = words
-                .iter()
-                .all(|w| contains_word(&subject, w) || contains_word(&body, w));
-            // Unweighted overlap for the lexical proxy and the no-signal check.
-            let lex_raw = crate::search::score(&words, f.subject, f.body) as f64;
-            // BM25 with column weights (title ×10, content ×5) and length normalisation,
-            // mirroring cogitod's FTS5 `bm25(memories_fts, 0, 10, 5, 1)`.
-            let dl = (doc_len(&subject) + doc_len(&body)) as f64;
-            let norm = 1.0 - BM25_B + BM25_B * (dl / avgdl.max(1.0));
-            let mut lex = 0.0f64;
-            for (i, w) in words.iter().enumerate() {
-                let f = BM25_TITLE_W * count_word(&subject, w) as f64
-                    + BM25_CONTENT_W * count_word(&body, w) as f64;
-                if f > 0.0 {
-                    lex += idf[i] * (f * (BM25_K1 + 1.0)) / (f + BM25_K1 * norm);
-                }
-            }
-            // Semantic similarity replaces the lexical proxy when both the query and the row
-            // carry an embedding; the lexical proxy remains the fallback otherwise.
             let (sim, embedded) = match (query_embedding, f.embedding) {
                 (Some(q), Some(e)) => (crate::embed::cosine(q, e) as f64, true),
-                _ => (lex_raw / (lex_raw + 10.0), false),
+                _ => (0.0, false),
             };
-            if lex_raw <= 0.0 && sim <= 0.0 {
-                return None;
-            }
             let age_src = f.updated_at.unwrap_or(f.date);
             let age_days = iso_to_epoch(age_src)
                 .map(|ep| ((now - ep) as f64 / 86_400.0).max(0.0))
@@ -722,8 +802,7 @@ fn rank_by<T>(
             } else {
                 RECENCY_HALF_LIFE_DAYS
             };
-            Some(Capsule {
-                lex,
+            Capsule {
                 sim,
                 embedded,
                 importance: f.importance,
@@ -731,8 +810,7 @@ fn rank_by<T>(
                 half_life,
                 access_count: f.access_count,
                 effectiveness: f.effectiveness,
-                all_terms,
-            })
+            }
         })
         .collect();
 
@@ -748,30 +826,23 @@ fn rank_by<T>(
     };
 
     let n = capsules.len();
-    let live: Vec<usize> = (0..n).filter(|&i| capsules[i].is_some()).collect();
 
     // Semantic arm mirrors cogitod's ANN KNN: keep only the nearest-by-cosine rows (the semantic
     // neighbourhood), then order THAT set by hybrid score. Ordering the whole corpus by hybrid
     // score would let recency/importance crowd out semantically-far rows before fusion.
     let semantic_order: Vec<usize> = if has_query_emb {
-        let mut embedded: Vec<usize> = live
-            .iter()
-            .copied()
-            .filter(|&i| capsules[i].as_ref().unwrap().embedded)
-            .collect();
+        let mut embedded: Vec<usize> = (0..n).filter(|&i| capsules[i].embedded).collect();
         embedded.sort_by(|&a, &b| {
             capsules[b]
-                .as_ref()
-                .unwrap()
                 .sim
-                .partial_cmp(&capsules[a].as_ref().unwrap().sim)
+                .partial_cmp(&capsules[a].sim)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let k = (limit.saturating_mul(30)).max(256);
         embedded.truncate(k);
         embedded.sort_by(|&a, &b| {
-            hybrid(capsules[b].as_ref().unwrap())
-                .partial_cmp(&hybrid(capsules[a].as_ref().unwrap()))
+            hybrid(&capsules[b])
+                .partial_cmp(&hybrid(&capsules[a]))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         embedded
@@ -779,62 +850,42 @@ fn rank_by<T>(
         Vec::new()
     };
 
-    // Lexical arm, mirroring cogitod's narrow-then-broad heuristic: for a multi-term query,
-    // prefer the all-terms match when it yields enough rows (>= min(limit, 5)); otherwise
-    // broaden to any-term. Sort by idf-weighted BM25, descending; tiebreak on similarity.
-    let narrow_floor = limit.min(5);
-    let full: Vec<usize> = live
-        .iter()
-        .copied()
-        .filter(|&i| capsules[i].as_ref().unwrap().all_terms)
-        .collect();
-    let lexical_pool: Vec<usize> = if words.len() > 1 && full.len() >= narrow_floor {
-        full
-    } else {
-        live.clone()
-    };
-    let mut lexical_order = lexical_pool;
-    lexical_order.sort_by(|&a, &b| {
-        let ca = capsules[a].as_ref().unwrap();
-        let cb = capsules[b].as_ref().unwrap();
-        cb.lex
-            .partial_cmp(&ca.lex)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(cb.sim.partial_cmp(&ca.sim).unwrap_or(std::cmp::Ordering::Equal))
-    });
-
     // Reciprocal rank fusion.
     let mut scores = vec![0.0f64; n];
     for (rank, &i) in semantic_order.iter().enumerate() {
         scores[i] += 1.0 / (RRF_K + rank as f64 + 1.0);
     }
     for (rank, &i) in lexical_order.iter().enumerate() {
-        if capsules[i].as_ref().unwrap().lex > 0.0 {
-            scores[i] += BM25_WEIGHT / (RRF_K + rank as f64 + 1.0);
-        }
+        scores[i] += BM25_WEIGHT / (RRF_K + rank as f64 + 1.0);
     }
 
     if std::env::var("OPEN_WHY_DEBUG_RANK").is_ok() {
-        eprintln!("[rank] query={query} live={}", live.len());
+        eprintln!(
+            "[rank] query={query} semantic={} lexical={}",
+            semantic_order.len(),
+            lexical_order.len()
+        );
         for (rank, &i) in semantic_order.iter().take(12).enumerate() {
-            let f = fields(&rows[i]);
-            let c = capsules[i].as_ref().unwrap();
+            let c = &capsules[i];
             eprintln!(
-                "  SEM[{rank}] sim={:.3} lex={:.2} imp={:.2} age={:.0} fused={:.5} | {}",
-                c.sim, c.lex, c.importance, c.age_days, scores[i], f.subject
+                "  SEM[{rank}] sim={:.3} imp={:.2} age={:.0} fused={:.5}",
+                c.sim, c.importance, c.age_days, scores[i]
             );
         }
         for (rank, &i) in lexical_order.iter().take(12).enumerate() {
-            let f = fields(&rows[i]);
-            let c = capsules[i].as_ref().unwrap();
-            eprintln!(
-                "  LEX[{rank}] sim={:.3} lex={:.2} fused={:.5} | {}",
-                c.sim, c.lex, scores[i], f.subject
-            );
+            let c = &capsules[i];
+            eprintln!("  LEX[{rank}] sim={:.3} fused={:.5}", c.sim, scores[i]);
         }
     }
 
-    let mut order = live;
+    // Fused candidate set = union of the two arms, best-fused first.
+    let mut order: Vec<usize> = semantic_order
+        .iter()
+        .copied()
+        .chain(lexical_order.iter().copied())
+        .collect();
+    order.sort_unstable();
+    order.dedup();
     order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal));
     order.truncate(limit);
 
@@ -954,6 +1005,16 @@ mod tests {
         }
     }
 
+    fn temp_store() -> Store {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("open-why-test-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open_with_embedder(&dir.join("t.db"), None).unwrap()
+    }
+
     #[test]
     fn cosine_is_bounded_and_symmetric() {
         assert_eq!(cosine(&[1.0, 0.0], &[1.0, 0.0]), 1.0);
@@ -967,7 +1028,8 @@ mod tests {
             decision("sqlite local record", "single file", 0.5, None),
             decision("postgres", "row level security", 0.5, None),
         ];
-        let ranked = rank("sqlite", None, rows, 1700000000, 10);
+        // FTS5 lexical arm: only row 0 matches "sqlite".
+        let ranked = rank("sqlite", None, rows, vec![0], 1700000000, 10);
         assert_eq!(ranked[0].subject, "sqlite local record");
     }
 
@@ -980,16 +1042,16 @@ mod tests {
             decision("dog", "a loyal companion", 0.5, Some(vec![0.0, 1.0])),
         ];
         let q = FakeEmbedder.embed("cat").unwrap();
-        let ranked = rank("cat", Some(&q), rows, 1700000000, 10);
+        // No lexical overlap: the FTS5 arm returns nothing, the semantic arm must carry.
+        let ranked = rank("cat", Some(&q), rows, Vec::new(), 1700000000, 10);
         assert_eq!(ranked[0].subject, "feline");
     }
 
     #[test]
     fn missing_embedding_falls_back_to_lexical_proxy() {
-        // A row with an embedding ranks semantically; a row without one still ranks
-        // via the lexical proxy and must not be dropped.
+        // A row with no embedding still ranks via the lexical (FTS5) arm and is not dropped.
         let rows = vec![decision("postgres", "row level security", 0.5, None)];
-        let ranked = rank("postgres", Some(&[1.0, 0.0]), rows, 1700000000, 10);
+        let ranked = rank("postgres", Some(&[1.0, 0.0]), rows, vec![0], 1700000000, 10);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].subject, "postgres");
     }
@@ -1015,22 +1077,6 @@ mod tests {
     }
 
     #[test]
-    fn bm25_length_normalization_penalizes_long_docs() {
-        // Two rows with the same title overlap; the longer body must not outrank the
-        // shorter one on that term alone. This mirrors FTS5's length normalisation.
-        let q = "worktree corruption";
-        let long = decision(
-            "worktree",
-            &("node_modules ".repeat(300)),
-            0.5,
-            None,
-        );
-        let short = decision("worktree", "corruption", 0.5, None);
-        let ranked = rank(q, None, vec![long, short], 1700000000, 10);
-        assert_eq!(ranked[0].subject, "worktree");
-    }
-
-    #[test]
     fn query_conditional_recency_weights() {
         assert!((recency_weight_for("the latest lane policy") - RECENCY_BOOST).abs() < 1e-9);
         assert!((recency_weight_for("how it used to work") - RECENCY_SUPPRESS).abs() < 1e-9);
@@ -1038,28 +1084,50 @@ mod tests {
     }
 
     #[test]
-    fn narrow_then_broad_prefers_all_terms_match() {
-        // Six rows: five match both query terms, one matches only "sqlite" (repeated, so
-        // its raw BM25 term frequency is high). With >=5 all-term rows, the narrow arm wins
-        // and the partial-match row is excluded from the lexical arm, sinking below them.
-        let mut rows: Vec<Decision> = (0..5)
-            .map(|i| decision(&format!("sqlite postgres {i}"), "both terms", 0.5, None))
-            .collect();
-        rows.push(decision("sqlite sqlite sqlite sqlite", "no postgres here", 0.5, None));
-        let ranked = rank("sqlite postgres", None, rows, 1700000000, 10);
-        assert_eq!(ranked.len(), 6);
-        assert_eq!(ranked[5].subject, "sqlite sqlite sqlite sqlite");
+    fn fts5_lexical_narrow_then_broad_prefers_all_terms() {
+        // FTS5 lexical arm: for a two-term query, the all-terms (AND) arm wins when it yields
+        // >= min(limit, 5) rows, so the partial-match row is excluded from the lexical arm.
+        let store = temp_store();
+        for i in 0..5 {
+            store
+                .capture(&decision(&format!("sqlite postgres {i}"), "both", 0.5, None), "global", None)
+                .unwrap();
+        }
+        store
+            .capture(&decision("sqlite sqlite sqlite sqlite", "no second token", 0.5, None), "global", None)
+            .unwrap();
+        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        assert_eq!(hits.len(), 5);
+        assert!(hits.iter().all(|h| h.subject.contains("postgres")));
     }
 
     #[test]
-    fn narrow_then_broad_falls_back_when_few_all_term_rows() {
-        // Only one row matches both terms (fewer than the narrow floor), so the lexical
-        // arm broadens to any-term and a partial-match row can still surface.
-        let rows = vec![
-            decision("sqlite postgres", "both", 0.5, None),
-            decision("sqlite", "only one term", 0.5, None),
-        ];
-        let ranked = rank("sqlite postgres", None, rows, 1700000000, 10);
-        assert_eq!(ranked.len(), 2);
+    fn fts5_lexical_narrow_then_broad_falls_back() {
+        // Only one all-terms row (< narrow floor), so the arm broadens to OR and the
+        // partial-match row still surfaces.
+        let store = temp_store();
+        store
+            .capture(&decision("sqlite postgres", "both", 0.5, None), "global", None)
+            .unwrap();
+        store
+            .capture(&decision("sqlite", "only one term", 0.5, None), "global", None)
+            .unwrap();
+        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn fts5_lexical_orders_multi_term_match_first() {
+        // The row matching both query terms must outrank the row matching only one. FTS5 bm25()
+        // handles idf + length normalisation natively — this is delegated to SQLite, not derived.
+        let store = temp_store();
+        store
+            .capture(&decision("worktree long", &("node_modules ".repeat(300)), 0.5, None), "global", None)
+            .unwrap();
+        store
+            .capture(&decision("worktree corruption", "corruption", 0.5, None), "global", None)
+            .unwrap();
+        let hits = store.search("worktree corruption", &["global"], &[], 10).unwrap();
+        assert_eq!(hits[0].subject, "worktree corruption");
     }
 }
