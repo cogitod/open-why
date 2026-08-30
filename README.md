@@ -54,11 +54,34 @@ Every answer is evidence-bound, not a guess:
 
 ## How it works
 
-1. `init` walks git history + ADRs + design docs and extracts decisions.
-2. `why` ranks them (git-aware lexical scoring) and cites the source.
+1. `init` walks git history + ADRs + design docs and extracts decisions into a
+   local SQLite store (`~/.cache/openwhy/openwhy.db`).
+2. `why` hybrid-ranks them (lexical + importance + recency decay) and cites the
+   source.
+3. `capture`, `search`, `get`, and `link` record and recall decisions beyond git.
 
-On the roadmap: `openwhy serve` (an MCP server so Claude Code / Codex / opencode
-can ask *"why is this here?"* before editing) and on-device embeddings.
+On the roadmap: on-device embeddings (semantic ranking).
+
+## Use as an MCP server
+
+`openwhy serve` speaks stdio MCP and exposes `openwhy_ask`, `openwhy_index`,
+`openwhy_capture`, `openwhy_search`, `openwhy_get`, and `openwhy_link`.
+
+opencode (`~/.config/opencode/opencode.jsonc`):
+
+```jsonc
+"openwhy": {
+  "type": "local",
+  "command": ["/path/to/openwhy/target/release/openwhy", "serve"],
+  "enabled": true
+}
+```
+
+Claude Code / Codex (`.mcp.json` / `claude mcp add`):
+
+```json
+{ "mcpServers": { "openwhy": { "command": "/path/to/openwhy/target/release/openwhy", "args": ["serve"] } } }
+```
 
 ## License
 
