@@ -67,10 +67,16 @@ enum Command {
         /// Optional kind facet (comma-separated): decision, fact, reference, project, ...
         #[arg(long, value_delimiter = ',')]
         types: Vec<String>,
+        /// Include superseded decisions (historical mode)
+        #[arg(long)]
+        historical: bool,
     },
     /// Fetch one decision by id
     Get {
         id: String,
+        /// Reach past supersession and print the full chain
+        #[arg(long)]
+        historical: bool,
     },
     /// Link a git commit to a decision (the "why" for that commit)
     Link {
@@ -146,29 +152,53 @@ fn main() -> Result<()> {
                 println!("captured decision {id} (scope: {scope})");
                 Ok(())
             }
-            Command::Search { query, limit, scope, types } => {
+            Command::Search { query, limit, scope, types, historical } => {
                 let store = db::Store::open_default()?;
                 let scope = scope.unwrap_or_else(|| "global".to_string());
-                let hits = store.search(&query, &[scope.as_str()], &types, limit)?;
-                print!("{}", answer::render(hits));
+                if historical {
+                    let hits = store.search_records_with(&query, &[scope.as_str()], &types, limit, true)?;
+                    print!("{}", answer::render_records(hits));
+                } else {
+                    let hits = store.search(&query, &[scope.as_str()], &types, limit)?;
+                    print!("{}", answer::render(hits));
+                }
                 Ok(())
             }
-            Command::Get { id } => {
+            Command::Get { id, historical } => {
                 let store = db::Store::open_default()?;
-                match store.get(&id)? {
-                    Some(d) => {
-                        println!("- {}", d.subject);
-                        println!("  {} · {} · {}", d.date, d.author, d.source);
-                        println!("  {}", d.body);
-                        let commits = store.linked_commits(&id)?;
-                        if !commits.is_empty() {
-                            println!("\n  linked commits:");
-                            for (hash, subj) in commits {
-                                println!("    {} {subj}", &hash[..hash.len().min(8)]);
-                            }
+                if historical {
+                    let chain = store.supersession_chain(&id, 20)?;
+                    if chain.is_empty() {
+                        println!("no decision with id {id}");
+                    } else {
+                        for (i, r) in chain.iter().enumerate() {
+                            let label = if i + 1 == chain.len() {
+                                if r.superseded_by.is_some() { "superseded → (successor not in store)" } else { "current" }
+                            } else if i == 0 {
+                                "oldest"
+                            } else {
+                                "→"
+                            };
+                            println!("- {} [{label}] {}", r.title, r.date);
+                            println!("  {} · {}", r.kind, r.source);
                         }
                     }
-                    None => println!("no active decision with id {id}"),
+                } else {
+                    match store.get(&id)? {
+                        Some(d) => {
+                            println!("- {}", d.subject);
+                            println!("  {} · {} · {}", d.date, d.author, d.source);
+                            println!("  {}", d.body);
+                            let commits = store.linked_commits(&id)?;
+                            if !commits.is_empty() {
+                                println!("\n  linked commits:");
+                                for (hash, subj) in commits {
+                                    println!("    {} {subj}", &hash[..hash.len().min(8)]);
+                                }
+                            }
+                        }
+                        None => println!("no active decision with id {id}"),
+                    }
                 }
                 Ok(())
             }

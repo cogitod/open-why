@@ -49,7 +49,9 @@ Four primitives, each small and composable:
   realizes. Ask which decisions a commit realizes, or which commits realized a
   decision.
 - **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
-  hydrates the *current* version; history stays reachable.
+  hydrates the *current* version; history stays reachable. `--historical` (search,
+  get, and MCP) reaches past supersession and walks the chain, so "what changed and
+  why" is answerable.
 - **Hybrid recall** — reciprocal-rank fusion of a **semantic arm** (local on-device
   `all-MiniLM-L6-v2` embeddings) and a **lexical arm** (FTS5-style BM25 with
   title/content column weights), weighted by importance and effectiveness and
@@ -80,7 +82,9 @@ why init
 # the rest of the surface
 why capture --title "Use SQLite" --content "..." --kind decision
 why search "sqlite" --types decision,fact
+why search "sqlite" --historical      # include superseded decisions
 why get <id>
+why get <id> --historical             # walk the supersession chain
 why link <commit> <decision>
 why import --file decisions.json
 why feedback <id> --helpful      # raise a decision's effectiveness
