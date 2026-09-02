@@ -9,6 +9,8 @@ open-why is a small, self-contained Rust crate: one local SQLite store, a retrie
 engine (local embeddings + BM25 + recency), and an MCP server. It does one thing,
 and it does not grow.
 
+> Mem0 / Graphiti remember **what**. open-why remembers **why**.
+
 ## The idea
 
 Agents are good at *doing*. They are bad at *remembering why*.
