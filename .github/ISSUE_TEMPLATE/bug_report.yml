@@ -1,0 +1,35 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: "`why --version`, or the commit SHA if you built from source"
+      placeholder: v0.1.0 or a1b2c3d
+    validations:
+      required: false
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What happened, what you expected, and how to reproduce it
+      placeholder: |
+        Summary:
+        Steps to reproduce:
+        Expected vs. actual:
+        Anything else (logs, `OPEN_WHY_DEBUG_RANK=1` output, etc.):
+    validations:
+      required: true
