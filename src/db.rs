@@ -578,6 +578,8 @@ impl Store {
             access_count: d.access_count,
             effectiveness: d.effectiveness,
             embedding: d.embedding.as_deref(),
+            title: &d.title,
+            content: &d.content,
         }))
     }
 
@@ -848,6 +850,8 @@ struct RankRow<'a> {
     access_count: i64,
     effectiveness: f64,
     embedding: Option<&'a [f32]>,
+    title: &'a str,
+    content: &'a str,
 }
 
 /// Per-result ranking explanation — why a row ranked where it did. Exposed by `--explain`.
@@ -878,6 +882,8 @@ fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, lexic
         access_count: d.access_count,
         effectiveness: d.effectiveness,
         embedding: d.embedding.as_deref(),
+        title: &d.subject,
+        content: &d.body,
     })
     .0
 }
@@ -903,6 +909,7 @@ fn rank_by<T>(
         half_life: f64,
         access_count: i64,
         effectiveness: f64,
+        lexical_gate_score: f64,
     }
     let has_query_emb = query_embedding.is_some();
     let capsules: Vec<Capsule> = rows
@@ -922,6 +929,12 @@ fn rank_by<T>(
             } else {
                 RECENCY_HALF_LIFE_DAYS
             };
+            let lexical_text = if f.title.is_empty() {
+                f.content.to_string()
+            } else {
+                format!("{}\n{}", f.title, f.content)
+            };
+            let lexical_gate_score = crate::relevance::lexical_score(query, f.content, &lexical_text);
             Capsule {
                 sim,
                 embedded,
@@ -930,6 +943,7 @@ fn rank_by<T>(
                 half_life,
                 access_count: f.access_count,
                 effectiveness: f.effectiveness,
+                lexical_gate_score,
             }
         })
         .collect();
@@ -998,7 +1012,7 @@ fn rank_by<T>(
         }
         for (rank, &i) in lexical_order.iter().take(12).enumerate() {
             let c = &capsules[i];
-            eprintln!("  LEX[{rank}] sim={:.3} fused={:.5}", c.sim, scores[i]);
+            eprintln!("  LEX[{rank}] sim={:.3} lex_gate={:.4} fused={:.5}", c.sim, c.lexical_gate_score, scores[i]);
         }
     }
 
@@ -1010,6 +1024,11 @@ fn rank_by<T>(
         .collect();
     order.sort_unstable();
     order.dedup();
+    // Post-fusion relevance gate (mirrors cogitod's `MemoryRelevanceGate`): drop candidates
+    // that cleared BM25/RRF fusion but are not actually relevant to the query, before the
+    // final score sort — so a filtered-out noise row can't block a genuine match from the
+    // top-N slice. Must run on the full fused set, not just the eventual top `limit`.
+    order.retain(|&i| crate::relevance::passes(capsules[i].sim, capsules[i].lexical_gate_score));
     order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal));
     order.truncate(limit);
 

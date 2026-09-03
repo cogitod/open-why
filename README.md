@@ -184,11 +184,18 @@ The lexical arm is a native SQLite FTS5 external-content table
 AND→OR heuristic and its `toSearchTerms` tokenization (`[a-z0-9_]+`, FTS5
 stopwords).
 
-Known gap (2026-08-30): 4/8 golden exact. The remaining misses are fuzzy
-multi-concept queries where cogitod's post-fusion **relevance gate**
-(`MemoryRelevanceGate`: similarity floor + `RAG_UTILITY_THRESHOLD` lexical
-utility) drops near-miss rows that open-why still returns. Porting that gate is
-the next parity step, tracked as a separate work item.
+Known gap (2026-09-03): 5/8 golden exact, up from 4/8 after porting cogitod's
+post-fusion **relevance gate** (`MemoryRelevanceGate`: similarity floor +
+`RAG_UTILITY_THRESHOLD` lexical utility — see `src/relevance.rs`). The gate
+fixed the one failure that was a true admission problem (a weak-but-nonzero
+semantic-arm competitor scoring below `SIMILARITY_FLOOR`, crowding out the
+right answer). The remaining 3 misses are **ranking-order** mismatches, not
+admission problems: the expected record is present and gate-admitted, just
+outscored by 1-2 other admitted candidates in the RRF/hybrid fusion — so the
+relevance gate, which only filters and never reorders, can't reach them.
+Closing those needs a closer comparison of open-why's hybrid rerank
+(`rank_by` in `src/db.rs`) against cogitod's exact `searchMemoriesHybrid`
+fusion, tracked as a separate work item.
 
 ## Build
 
