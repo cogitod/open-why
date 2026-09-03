@@ -56,6 +56,10 @@ golden set.
 | tenant isolation / ACL / PostgreSQL managed path (`record-tools.ts`) | cogitod-only |
 | work_items, sessions, fleet, lanes, landing, verification, conductor, hooks, OPC | orchestration = the moat; stays in cogitod |
 
+**OPC registration.** open-why is deliberately never registered with cogito-opc's registry — the
+table above already draws this boundary (OPC = orchestration = the moat). Registration would be a
+dependency, not a distillation. This is a standing design choice, not an oversight to close.
+
 Revisited 2026-09-03: after the relevance-gate port (README "Known gap") closed golden
 parity from 4/8 to 5/8, the contradiction ledger was investigated as the likely fix for
 the remaining 3 (ranking-order, not admission, misses — cogitod's `demotionFactor`
