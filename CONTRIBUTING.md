@@ -11,8 +11,14 @@ cd open-why
 cargo build --release
 ```
 
-See [README.md#building-without-network-access](README.md#building-without-network-access)
-if `cargo build` can't reach `cdn.pyke.io` from your network.
+`cargo build` fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` (via the
+`ort` crate) unless told not to. If your network can't reach it, point
+`ORT_LIB_LOCATION` at a pre-installed onnxruntime instead — no `Cargo.toml` change
+needed:
+
+```bash
+ORT_LIB_LOCATION=/path/to/onnxruntime cargo build --release
+```
 
 Enable the pre-commit leak-check hook once per clone:
 
@@ -35,7 +41,7 @@ cargo test
 ```
 
 If your change touches ranking (`src/db.rs`, `src/relevance.rs`) and you have your own
-golden fixture (see [README.md#retrieval-parity](README.md#retrieval-parity) — none
+golden fixture (see [docs/retrieval-parity.md](docs/retrieval-parity.md) — none
 ships in this repo, it's only meaningful against your own corpus), also run the
 golden-parity harness and note the pass count in your PR if it changed:
 
