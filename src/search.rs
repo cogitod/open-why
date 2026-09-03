@@ -24,3 +24,38 @@ pub(crate) fn tokenize(question: &str) -> Vec<String> {
     }
     seen
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_stopwords_but_keeps_non_stopword_short_words() {
+        // "why", "do", "we", "for", "the" are stopwords; "use" is not.
+        assert_eq!(
+            tokenize("why do we use sqlite for the store"),
+            vec!["use", "sqlite", "store"]
+        );
+    }
+
+    #[test]
+    fn underscore_keeps_a_token_together() {
+        assert_eq!(
+            tokenize("worktree node_modules symlink"),
+            vec!["worktree", "node_modules", "symlink"]
+        );
+    }
+
+    #[test]
+    fn single_char_tokens_are_dropped() {
+        assert_eq!(tokenize("a b sqlite"), vec!["sqlite"]);
+    }
+
+    #[test]
+    fn dedupes_repeated_terms() {
+        assert_eq!(
+            tokenize("sqlite sqlite database"),
+            vec!["sqlite", "database"]
+        );
+    }
+}
