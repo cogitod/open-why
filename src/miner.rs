@@ -150,3 +150,35 @@ fn is_decision_file(path: &str) -> bool {
         || lower.contains("spec")
         || lower.contains("why")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requires_md_extension() {
+        assert!(!is_decision_file("docs/plan.txt"));
+    }
+
+    #[test]
+    fn matches_known_keywords() {
+        assert!(is_decision_file("docs/ADR-001-use-sqlite.md"));
+        assert!(is_decision_file("DECISIONS.md"));
+        assert!(is_decision_file("design/spec.md"));
+        assert!(is_decision_file("why-sqlite.md"));
+    }
+
+    #[test]
+    fn rejects_unrelated_markdown() {
+        assert!(!is_decision_file("README.md"));
+    }
+
+    #[test]
+    fn detects_common_git_url_schemes() {
+        assert!(looks_like_url("https://github.com/foo/bar"));
+        assert!(looks_like_url("git@github.com:foo/bar.git"));
+        assert!(looks_like_url("ssh://git@host/repo.git"));
+        assert!(!looks_like_url("/local/path"));
+        assert!(!looks_like_url("relative/path"));
+    }
+}

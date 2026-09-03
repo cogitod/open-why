@@ -445,3 +445,51 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
         _ => format!("unknown tool: {name}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s_extracts_string_field() {
+        let args = json!({"query": "why sqlite"});
+        assert_eq!(s(&args, "query"), Some("why sqlite".to_string()));
+        assert_eq!(s(&args, "missing"), None);
+    }
+
+    #[test]
+    fn s_returns_none_for_non_string_value() {
+        let args = json!({"limit": 5});
+        assert_eq!(s(&args, "limit"), None);
+    }
+
+    #[test]
+    fn tool_builds_expected_schema_shape() {
+        let t = tool(
+            "open-why_search",
+            "Search decisions",
+            json!({"query": {"type": "string"}}),
+            &["query"],
+        );
+        assert_eq!(t["name"], "open-why_search");
+        assert_eq!(t["inputSchema"]["type"], "object");
+        assert_eq!(t["inputSchema"]["required"], json!(["query"]));
+    }
+
+    #[test]
+    fn kinds_from_parses_comma_separated_string() {
+        let args = json!({"type": "decision, fact ,reference"});
+        assert_eq!(kinds_from(&args), vec!["decision", "fact", "reference"]);
+    }
+
+    #[test]
+    fn kinds_from_parses_array() {
+        let args = json!({"types": ["decision", "fact"]});
+        assert_eq!(kinds_from(&args), vec!["decision", "fact"]);
+    }
+
+    #[test]
+    fn kinds_from_empty_when_absent() {
+        assert_eq!(kinds_from(&json!({})), Vec::<String>::new());
+    }
+}
