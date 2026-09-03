@@ -56,6 +56,14 @@ golden set.
 | tenant isolation / ACL / PostgreSQL managed path (`record-tools.ts`) | cogitod-only |
 | work_items, sessions, fleet, lanes, landing, verification, conductor, hooks, OPC | orchestration = the moat; stays in cogitod |
 
+Revisited 2026-09-03: after the relevance-gate port (README "Known gap") closed golden
+parity from 4/8 to 5/8, the contradiction ledger was investigated as the likely fix for
+the remaining 3 (ranking-order, not admission, misses — cogitod's `demotionFactor`
+suppresses contested/superseded candidates before the final sort). Full cross-repo
+porting shape was scoped but declined: it's exactly the ledger this table already
+defers, and 3 golden queries don't justify reopening that scope. Revisit only if this
+table's scope is deliberately reopened for other reasons.
+
 ## The seam
 
 open-why exposes a minimal verb set that cogitod (and any other agent) can call:
