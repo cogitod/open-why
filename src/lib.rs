@@ -40,4 +40,4 @@ pub mod store;
 // Convenience re-exports — the library surface.
 pub use db::{default_path, RankExplanation, Store};
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
-pub use store::{Decision, ExternalDecision, GitRef, Record};
+pub use store::{Decision, EvidenceRecord, ExternalDecision, GitRef, Record};

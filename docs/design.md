@@ -38,7 +38,9 @@ Four primitives, each small and composable:
 
 - **Decision linkage** — a commit's `mem-ref:` trailers bind it to the decision it
   realizes. Ask which decisions a commit realizes, or which commits realized a
-  decision.
+  decision. Library consumers can resolve any stable record ID through
+  `Store::get_current_evidence`: it follows supersession to the active record and
+  returns that record's Git references plus the explicit chain it traversed.
 - **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
   hydrates the *current* version; history stays reachable. `--historical` (search,
   get, and MCP) reaches past supersession and walks the chain, so "what changed and
