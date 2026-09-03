@@ -1,5 +1,5 @@
 use crate::embed::Embedder;
-use crate::store::{Decision, ExternalDecision, Record};
+use crate::store::{Decision, EvidenceRecord, ExternalDecision, GitRef, Record};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -617,6 +617,39 @@ impl Store {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Resolve a stable record ID to the current, evidence-bearing end of its
+    /// supersession chain.
+    ///
+    /// Unknown IDs, broken chains, retired records without a successor, cycles, and
+    /// chains longer than the bounded traversal return `None`. This fail-closed read
+    /// is intended for continuation and other prompt-facing consumers: a superseded
+    /// record must never masquerade as the current rationale.
+    pub fn get_current_evidence(&self, id: &str) -> Result<Option<EvidenceRecord>> {
+        const MAX_SUPERSESSION_CHAIN: usize = 64;
+
+        let chain = self.supersession_chain(id, MAX_SUPERSESSION_CHAIN)?;
+        let Some(current) = chain.last().cloned() else {
+            return Ok(None);
+        };
+        if current.superseded_by.is_some() || current.valid_until.is_some() {
+            return Ok(None);
+        }
+        let git_refs = self
+            .linked_commits(&current.id)?
+            .into_iter()
+            .map(|(commit_hash, commit_subject)| GitRef {
+                commit_hash,
+                commit_subject,
+            })
+            .collect();
+        Ok(Some(EvidenceRecord {
+            requested_id: id.to_string(),
+            record: current,
+            git_refs,
+            supersession_chain: chain.into_iter().map(|record| record.id).collect(),
+        }))
     }
 
     /// Search active decisions across scopes and return full records (id + temporal
@@ -1601,6 +1634,67 @@ mod tests {
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].id, "aaa");
         assert_eq!(chain[1].id, "bbb");
+    }
+
+    #[test]
+    fn current_evidence_resolves_a_stale_link_and_returns_current_git_proof() {
+        let store = temp_store();
+        store
+            .capture_external(
+                &decision("database choice", "sqlite", 0.5, None),
+                "global",
+                "aaa",
+                Some("2026-01-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .capture_external(
+                &decision("database choice", "postgres now", 0.5, None),
+                "global",
+                "bbb",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                Some("aaa"),
+            )
+            .unwrap();
+        store.link_git("aaa", "old-commit", "Use SQLite").unwrap();
+        store
+            .link_git("bbb", "new-commit", "Move to Postgres")
+            .unwrap();
+
+        let evidence = store.get_current_evidence("aaa").unwrap().unwrap();
+        assert_eq!(evidence.requested_id, "aaa");
+        assert_eq!(evidence.record.id, "bbb");
+        assert_eq!(evidence.supersession_chain, ["aaa", "bbb"]);
+        assert_eq!(evidence.git_refs.len(), 1);
+        assert_eq!(evidence.git_refs[0].commit_hash, "new-commit");
+    }
+
+    #[test]
+    fn current_evidence_fails_closed_for_a_retired_record_without_a_successor() {
+        let store = temp_store();
+        store
+            .capture_external(
+                &decision("retired", "no longer current", 0.5, None),
+                "global",
+                "retired-id",
+                Some("2026-01-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE decisions SET valid_until='2026-02-01T00:00:00Z' WHERE id='retired-id'",
+                [],
+            )
+            .unwrap();
+
+        assert!(store.get_current_evidence("retired-id").unwrap().is_none());
+        assert!(store.get_current_evidence("missing").unwrap().is_none());
     }
 
     #[test]

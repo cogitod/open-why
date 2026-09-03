@@ -64,6 +64,20 @@ pub struct GitRef {
     pub commit_subject: String,
 }
 
+/// One evidence-bound read of the current record reached from a stable record ID.
+///
+/// `requested_id` may name a superseded record. `record` is always the current,
+/// active end of that supersession chain; `supersession_chain` makes the resolution
+/// explicit so consumers never present retired rationale as current. Git references
+/// belong to the returned current record.
+#[derive(Debug, Clone, Serialize)]
+pub struct EvidenceRecord {
+    pub requested_id: String,
+    pub record: Record,
+    pub git_refs: Vec<GitRef>,
+    pub supersession_chain: Vec<String>,
+}
+
 /// A full decision record as returned to a client, including its id and temporal
 /// window. Mirrors the `decisions` table so a consumer (cogitod) can round-trip a
 /// record exactly, not just its text.
