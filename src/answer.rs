@@ -1,4 +1,7 @@
-use crate::{db, miner, store::{Decision, Record}};
+use crate::{
+    db, miner,
+    store::{Decision, Record},
+};
 use anyhow::Result;
 use std::path::Path;
 
@@ -52,7 +55,9 @@ pub fn render_records(records: Vec<Record>) -> String {
         let superseded = r.superseded_by.is_some() || r.valid_until.is_some();
         let marker = if superseded {
             match &r.superseded_by {
-                Some(next) if !next.is_empty() => format!(" (superseded by {})", &next[..next.len().min(8)]),
+                Some(next) if !next.is_empty() => {
+                    format!(" (superseded by {})", &next[..next.len().min(8)])
+                }
                 _ => " (superseded)".to_string(),
             }
         } else {
