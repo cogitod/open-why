@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Activate with: git config core.hooksPath hooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/hooks/check-leaks.sh" staged

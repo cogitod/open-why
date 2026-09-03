@@ -1,0 +1,8 @@
+# Paths exempt from the UUID-density check in hooks/check-leaks.sh (never from the
+# secret-pattern check — a real secret must be removed/revoked, not allowlisted).
+# One path per line. Add a comment above each entry explaining why it's safe.
+
+# Golden retrieval-parity fixture: titles + UUIDs only (no content bodies), reviewed
+# 2026-09-03. Already public since 2026-08-30 (commit 95956c0) — allowlisted so the
+# check doesn't re-flag it, not because its exposure was a deliberate choice.
+tests/fixtures/golden-queries.json
