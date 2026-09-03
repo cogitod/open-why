@@ -279,6 +279,8 @@ pub fn fetch_model() -> Result<PathBuf> {
             .call()
             .with_context(|| format!("download {url}"))?
             .body_mut()
+            .with_config()
+            .limit(100 * 1024 * 1024) // model_quantized.onnx is ~23MB, well past ureq's 10MB default
             .read_to_vec()
             .with_context(|| format!("read {url}"))?;
         std::fs::write(&dest, &bytes).with_context(|| format!("write {}", dest.display()))?;
