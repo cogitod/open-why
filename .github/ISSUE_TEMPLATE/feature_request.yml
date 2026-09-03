@@ -1,0 +1,15 @@
+name: Feature request
+description: Suggest something open-why should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: details
+    attributes:
+      label: What and why
+      description: What you want, and the problem it solves. If it's outside the "why" wedge (see PLAN.md's "what we deliberately do NOT distill"), say why it belongs here anyway.
+      placeholder: |
+        What:
+        Why:
+        Rough shape of a solution, if you have one:
+    validations:
+      required: true
