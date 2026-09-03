@@ -1,6 +1,14 @@
 # open-why
 
+[![CI](https://github.com/cogitod/open-why/actions/workflows/ci.yml/badge.svg)](https://github.com/cogitod/open-why/actions/workflows/ci.yml)
+
 **The thin "why" layer for AI agents.**
+
+> **Status: pre-1.0.** The git-mining path (`why init`, `why capture`, `why search`,
+> `why serve`) is fully standalone and works against any git repo today. The `why
+> import` / retrieval-parity path is how this store gets bulk-loaded from an external
+> system (currently: cogitod's durable memories) — see [Retrieval
+> parity](#retrieval-parity) for what that does and doesn't require.
 
 `git blame` tells you *who* changed a line and *when*. `open-why` tells you *why* —
 the commit, the ADR, the author, the rationale — as a cited answer.
@@ -208,6 +216,20 @@ platform (via `ort`'s `download-binaries`). The embedding model is fetched with
 `why fetch-model` (or loaded from `OPEN_WHY_EMBED_MODEL_PATH` at runtime), not
 vendored.
 
+## Contributing
+
+Issues and PRs welcome. CI (`cargo build --release`, `cargo clippy -- -D warnings`,
+`cargo test`, plus a secret/leak scan) runs on every push and PR — run the same
+locally before pushing. Enable the pre-commit leak check once per clone:
+
+```bash
+git config core.hooksPath hooks
+```
+
+It scans staged files for secrets (keys, tokens) and for unreviewed exports of real
+internal records (see `hooks/check-leaks.sh`); reviewed fixture paths are listed in
+`hooks/leak-allowlist.txt`.
+
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE).
