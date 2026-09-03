@@ -170,15 +170,31 @@ Claude Code / Codex (`.mcp.json` / `claude mcp add`):
 
 ## Retrieval parity
 
-`tests/fixtures/golden-queries.json` pins a golden set: for each query, the top-1
-memory cogitod's production `mem_search` returned against the live durable corpus
-(project `1`), captured at fixture time. `why-golden` checks open-why's top-1
-matches by id — the memory UUID survives the mirror verbatim, so parity is an
-exact-id comparison, not a fuzzy title match.
+`why-golden` checks open-why's top-1 result against a golden set you provide: for each
+query, the top-1 memory some reference engine (e.g. cogitod's production `mem_search`)
+returned against your own corpus. The memory id survives the mirror verbatim, so parity
+is an exact-id comparison, not a fuzzy title match. This is inherently private — it's
+only meaningful against your own live corpus — so no fixture ships in this repo; point
+`--fixture` at your own file in the same shape:
+
+```json
+{
+  "description": "Golden retrieval parity set",
+  "scope": "1",
+  "captured_at": "2026-08-30T06:44:00Z",
+  "queries": [
+    {
+      "query": "example search query",
+      "types": ["fact"],
+      "expected": { "id": "<uuid>", "title": "example title", "type": "fact" }
+    }
+  ]
+}
+```
 
 ```bash
 OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2 \
-  cargo run --release --bin why-golden
+  cargo run --release --bin why-golden -- --fixture /path/to/your-golden-queries.json
 ```
 
 Both engines are run against the same corpus (open-why's store is a mirror of

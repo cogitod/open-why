@@ -34,11 +34,13 @@ cargo clippy --release --all-targets -- -D warnings
 cargo test
 ```
 
-If your change touches ranking (`src/db.rs`, `src/relevance.rs`), also run the
+If your change touches ranking (`src/db.rs`, `src/relevance.rs`) and you have your own
+golden fixture (see [README.md#retrieval-parity](README.md#retrieval-parity) — none
+ships in this repo, it's only meaningful against your own corpus), also run the
 golden-parity harness and note the pass count in your PR if it changed:
 
 ```bash
-cargo build --release --bin why-golden && ./target/release/why-golden
+cargo build --release --bin why-golden && ./target/release/why-golden --fixture /path/to/your-golden-queries.json
 ```
 
 ## Opening a PR
