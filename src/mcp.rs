@@ -12,7 +12,9 @@ fn write_resp(w: &mut impl Write, v: &Value) -> Result<()> {
 }
 
 fn s(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(|x| x.to_string())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|x| x.to_string())
 }
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -64,7 +66,11 @@ pub fn serve() -> Result<()> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+        let method = msg
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         let id = msg.get("id").cloned();
 
         match method.as_str() {
@@ -214,7 +220,9 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             match miner::resolve_repo(repo_arg) {
                 Ok(repo) => {
                     let scope = store::scope_for(&repo);
-                    match miner::mine(&repo).and_then(|d| store.import_decisions(&scope, &d).map(|_| d.len())) {
+                    match miner::mine(&repo)
+                        .and_then(|d| store.import_decisions(&scope, &d).map(|_| d.len()))
+                    {
                         Ok(len) => format!("indexed {len} decisions (scope: {scope})"),
                         Err(e) => format!("error: {e:#}"),
                     }
@@ -230,7 +238,10 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 return "error: title and content are required".to_string();
             };
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
-            let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
+            let importance = args
+                .get("importance")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5);
             let id = s(args, "id");
             let valid_from = s(args, "valid_from");
             let fact_key = s(args, "fact_key");
@@ -244,9 +255,14 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                 ..store::Decision::default()
             };
             let result = match id.as_deref() {
-                Some(id) if !id.is_empty() => {
-                    store.capture_external(&d, &scope, id, valid_from.as_deref(), fact_key.as_deref(), supersedes.as_deref())
-                }
+                Some(id) if !id.is_empty() => store.capture_external(
+                    &d,
+                    &scope,
+                    id,
+                    valid_from.as_deref(),
+                    fact_key.as_deref(),
+                    supersedes.as_deref(),
+                ),
                 _ => store.capture(&d, &scope, supersedes.as_deref()),
             };
             match result {
@@ -255,10 +271,11 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             }
         }
         "open-why_import" => {
-            let rows: Vec<store::ExternalDecision> = match serde_json::from_value(args.get("rows").cloned().unwrap_or(Value::Null)) {
-                Ok(rows) => rows,
-                Err(e) => return format!("error: bad rows: {e}"),
-            };
+            let rows: Vec<store::ExternalDecision> =
+                match serde_json::from_value(args.get("rows").cloned().unwrap_or(Value::Null)) {
+                    Ok(rows) => rows,
+                    Err(e) => return format!("error: bad rows: {e}"),
+                };
             match store.import_external(&rows) {
                 Ok(n) => format!("imported {n} decisions"),
                 Err(e) => format!("error: {e:#}"),
@@ -269,22 +286,52 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let scope = s(args, "scope").unwrap_or_else(|| "global".to_string());
             let kinds = kinds_from(args);
-            let historical = args.get("historical").and_then(|v| v.as_bool()).unwrap_or(false);
-            let explain = args.get("explain").and_then(|v| v.as_bool()).unwrap_or(false);
-            let explain_drops = args.get("explain_drops").and_then(|v| v.as_bool()).unwrap_or(false);
+            let historical = args
+                .get("historical")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let explain = args
+                .get("explain")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let explain_drops = args
+                .get("explain_drops")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if explain_drops {
-                match store.search_records_drops(&query, &[scope.as_str()], &kinds, limit, historical, 5) {
+                match store.search_records_drops(
+                    &query,
+                    &[scope.as_str()],
+                    &kinds,
+                    limit,
+                    historical,
+                    5,
+                ) {
                     Ok((results, drops)) => {
-                        let explain_vec = |v: Vec<(crate::store::Record, crate::db::RankExplanation)>| -> Vec<Value> {
-                            v.into_iter().map(|(r, e)| json!({"record": r, "explain": e})).collect()
+                        let explain_vec = |v: Vec<(
+                            crate::store::Record,
+                            crate::db::RankExplanation,
+                        )>|
+                         -> Vec<Value> {
+                            v.into_iter()
+                                .map(|(r, e)| json!({"record": r, "explain": e}))
+                                .collect()
                         };
-                        serde_json::to_string(&json!({"results": explain_vec(results), "drops": explain_vec(drops)}))
-                            .unwrap_or_else(|e| format!("error: {e}"))
+                        serde_json::to_string(
+                            &json!({"results": explain_vec(results), "drops": explain_vec(drops)}),
+                        )
+                        .unwrap_or_else(|e| format!("error: {e}"))
                     }
                     Err(e) => format!("error: {e:#}"),
                 }
             } else if explain {
-                match store.search_records_explain(&query, &[scope.as_str()], &kinds, limit, historical) {
+                match store.search_records_explain(
+                    &query,
+                    &[scope.as_str()],
+                    &kinds,
+                    limit,
+                    historical,
+                ) {
                     Ok(pairs) => {
                         let explained: Vec<Value> = pairs
                             .into_iter()
@@ -295,8 +342,16 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                     Err(e) => format!("error: {e:#}"),
                 }
             } else if s(args, "format").as_deref() == Some("json") {
-                match store.search_records_with(&query, &[scope.as_str()], &kinds, limit, historical) {
-                    Ok(records) => serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}")),
+                match store.search_records_with(
+                    &query,
+                    &[scope.as_str()],
+                    &kinds,
+                    limit,
+                    historical,
+                ) {
+                    Ok(records) => {
+                        serde_json::to_string(&records).unwrap_or_else(|e| format!("error: {e}"))
+                    }
                     Err(e) => format!("error: {e:#}"),
                 }
             } else if historical {
@@ -313,27 +368,40 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
         }
         "open-why_get" => {
             let id = s(args, "id").unwrap_or_default();
-            let historical = args.get("historical").and_then(|v| v.as_bool()).unwrap_or(false);
+            let historical = args
+                .get("historical")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if historical {
                 match store.supersession_chain(&id, 20) {
-                    Ok(chain) => serde_json::to_string(&chain).unwrap_or_else(|e| format!("error: {e}")),
+                    Ok(chain) => {
+                        serde_json::to_string(&chain).unwrap_or_else(|e| format!("error: {e}"))
+                    }
                     Err(e) => format!("error: {e:#}"),
                 }
             } else if s(args, "format").as_deref() == Some("json") {
                 match store.get_record(&id) {
-                    Ok(Some(r)) => serde_json::to_string(&r).unwrap_or_else(|e| format!("error: {e}")),
+                    Ok(Some(r)) => {
+                        serde_json::to_string(&r).unwrap_or_else(|e| format!("error: {e}"))
+                    }
                     Ok(None) => "null".to_string(),
                     Err(e) => format!("error: {e:#}"),
                 }
             } else {
                 match store.get(&id) {
                     Ok(Some(d)) => {
-                        let mut t = format!("- {}\n  {} · {} · {}\n  {}", d.subject, d.date, d.author, d.source, d.body);
+                        let mut t = format!(
+                            "- {}\n  {} · {} · {}\n  {}",
+                            d.subject, d.date, d.author, d.source, d.body
+                        );
                         if let Ok(commits) = store.linked_commits(&id) {
                             if !commits.is_empty() {
                                 t.push_str("\n\n  linked commits:");
                                 for (hash, subj) in commits {
-                                    t.push_str(&format!("\n    {} {subj}", &hash[..hash.len().min(8)]));
+                                    t.push_str(&format!(
+                                        "\n    {} {subj}",
+                                        &hash[..hash.len().min(8)]
+                                    ));
                                 }
                             }
                         }
@@ -368,7 +436,8 @@ fn call_tool(store: &db::Store, name: &str, args: &Value) -> String {
                     "helpful": helpful,
                     "effectiveness": eff,
                     "recorded": true
-                })).unwrap_or_else(|e| format!("error: {e}")),
+                }))
+                .unwrap_or_else(|e| format!("error: {e}")),
                 Ok(None) => format!("no active decision with id {id}"),
                 Err(e) => format!("error: {e:#}"),
             }

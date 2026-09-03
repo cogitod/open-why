@@ -93,9 +93,8 @@ impl Embedder for LocalEmbedder {
 
         let input_ids = ort::value::Tensor::from_array(([1usize, seq], ids))
             .map_err(|e| anyhow::anyhow!("build input_ids tensor: {e}"))?;
-        let attention_mask_t =
-            ort::value::Tensor::from_array(([1usize, seq], attention_mask))
-                .map_err(|e| anyhow::anyhow!("build attention_mask tensor: {e}"))?;
+        let attention_mask_t = ort::value::Tensor::from_array(([1usize, seq], attention_mask))
+            .map_err(|e| anyhow::anyhow!("build attention_mask tensor: {e}"))?;
         let token_type_ids = ort::value::Tensor::from_array(([1usize, seq], type_ids))
             .map_err(|e| anyhow::anyhow!("build token_type_ids tensor: {e}"))?;
 
@@ -307,12 +306,16 @@ mod tests {
             return;
         };
         let embedder = LocalEmbedder::new(Path::new(&dir)).unwrap();
-        let v = embedder.embed("open-why cogitod dependency inversion").unwrap();
+        let v = embedder
+            .embed("open-why cogitod dependency inversion")
+            .unwrap();
         assert_eq!(v.len(), 384);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-3, "expected unit norm, got {norm}");
         // Deterministic: same input, same vector.
-        let again = embedder.embed("open-why cogitod dependency inversion").unwrap();
+        let again = embedder
+            .embed("open-why cogitod dependency inversion")
+            .unwrap();
         assert_eq!(v, again);
     }
 

@@ -15,7 +15,10 @@ use std::path::PathBuf;
 /// (see cogitod `scripts/migrate-durable-to-open-why.ts`), and an embedder is configured
 /// (`OPEN_WHY_EMBED_MODEL_PATH` or `why fetch-model`) so the semantic arm is active.
 #[derive(Parser)]
-#[command(name = "why-golden", about = "Run the golden retrieval parity set against open-why")]
+#[command(
+    name = "why-golden",
+    about = "Run the golden retrieval parity set against open-why"
+)]
 struct Cli {
     #[arg(long, default_value = "tests/fixtures/golden-queries.json")]
     fixture: PathBuf,
@@ -56,9 +59,20 @@ fn main() -> Result<()> {
 
     let semantic = std::env::var("OPEN_WHY_EMBED_MODEL_PATH").is_ok()
         || std::env::var("OPEN_WHY_EMBED_URL").is_ok();
-    println!("golden parity: {} queries (scope `{}`)", fixture.queries.len(), scope);
+    println!(
+        "golden parity: {} queries (scope `{}`)",
+        fixture.queries.len(),
+        scope
+    );
     println!("reference captured: {}", fixture.captured_at);
-    println!("semantic arm: {}", if semantic { "on" } else { "OFF (lexical-first)" });
+    println!(
+        "semantic arm: {}",
+        if semantic {
+            "on"
+        } else {
+            "OFF (lexical-first)"
+        }
+    );
     println!();
 
     let mut pass = 0;
@@ -73,12 +87,19 @@ fn main() -> Result<()> {
             fail += 1;
         }
         println!("{} \"{}\"", if ok { "PASS" } else { "FAIL" }, q.query);
-        println!("  expected: {} [{}] ({})", q.expected.title, q.expected.kind, q.expected.id);
+        println!(
+            "  expected: {} [{}] ({})",
+            q.expected.title, q.expected.kind, q.expected.id
+        );
         if hits.is_empty() {
             println!("  (no results)");
         }
         for (i, h) in hits.iter().enumerate() {
-            let label = if i == 0 { "top-1" } else { &format!("#{}", i + 1) };
+            let label = if i == 0 {
+                "top-1"
+            } else {
+                &format!("#{}", i + 1)
+            };
             println!("  {label:<5} {} [{}] {}", h.title, h.kind, h.id);
         }
         println!();

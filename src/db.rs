@@ -1,5 +1,5 @@
-use crate::store::{Decision, ExternalDecision, Record};
 use crate::embed::Embedder;
+use crate::store::{Decision, ExternalDecision, Record};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -142,8 +142,12 @@ impl Store {
         // index being empty while the content table has rows — the FTS5 external-content
         // `'rebuild'` command is unreliable against a TEXT-primary-key content table, so
         // backfill with the same explicit insert shape the triggers use.
-        let idx_count: i64 = self.conn.query_row("SELECT count(*) FROM decisions_fts_idx", [], |r| r.get(0))?;
-        let content_count: i64 = self.conn.query_row("SELECT count(*) FROM decisions", [], |r| r.get(0))?;
+        let idx_count: i64 =
+            self.conn
+                .query_row("SELECT count(*) FROM decisions_fts_idx", [], |r| r.get(0))?;
+        let content_count: i64 =
+            self.conn
+                .query_row("SELECT count(*) FROM decisions", [], |r| r.get(0))?;
         if idx_count == 0 && content_count > 0 {
             self.conn.execute_batch(
                 "DROP TABLE IF EXISTS decisions_fts;
@@ -189,7 +193,8 @@ impl Store {
             |r| r.get(0),
         )?;
         if has == 0 {
-            self.conn.execute_batch(&format!("ALTER TABLE decisions ADD COLUMN {column} {ty};"))?;
+            self.conn
+                .execute_batch(&format!("ALTER TABLE decisions ADD COLUMN {column} {ty};"))?;
         }
         Ok(())
     }
@@ -201,7 +206,11 @@ impl Store {
         let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
         let id = digest(&format!("{identity}\n{content_digest}"));
         let importance = d.importance.clamp(0.0, 1.0);
-        let commit = if d.kind == "commit" { d.sha.clone() } else { String::new() };
+        let commit = if d.kind == "commit" {
+            d.sha.clone()
+        } else {
+            String::new()
+        };
         let now = now_epoch();
         let now_str = epoch_to_iso(now);
         self.conn.execute(
@@ -209,7 +218,21 @@ impl Store {
                (id, kind, title, content, importance, source, author, commit_sha, date, scope,
                 content_digest, source_identity, created_epoch)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![id, d.kind, d.subject, d.body, importance, d.source, d.author, commit, now_str, scope, content_digest, identity, now],
+            params![
+                id,
+                d.kind,
+                d.subject,
+                d.body,
+                importance,
+                d.source,
+                d.author,
+                commit,
+                now_str,
+                scope,
+                content_digest,
+                identity,
+                now
+            ],
         )?;
         if let Some(sid) = supersedes {
             if !sid.is_empty() {
@@ -244,10 +267,16 @@ impl Store {
     ) -> Result<String> {
         let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
         let importance = d.importance.clamp(0.0, 1.0);
-        let commit = if d.kind == "commit" { d.sha.clone() } else { String::new() };
+        let commit = if d.kind == "commit" {
+            d.sha.clone()
+        } else {
+            String::new()
+        };
         let now = now_epoch();
         let now_str = epoch_to_iso(now);
-        let vfrom = valid_from.map(String::from).unwrap_or_else(|| now_str.clone());
+        let vfrom = valid_from
+            .map(String::from)
+            .unwrap_or_else(|| now_str.clone());
         let identity = format!("external:{scope}:{id}");
         let fact_key = fact_key.filter(|k| !k.is_empty()).map(String::from);
         let embedding = self.embed_text(&d.subject, &d.body, None);
@@ -269,18 +298,26 @@ impl Store {
             .into_iter()
             .collect();
         let keyed: Vec<String> = match fact_key.as_deref() {
-            Some(key) => self.conn.prepare(
-                "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND fact_key=?3
+            Some(key) => self
+                .conn
+                .prepare(
+                    "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND fact_key=?3
                    AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
-            )?.query_map(params![scope, d.kind, key, id], |r| r.get(0))?
-                .filter_map(|r| r.ok()).collect(),
+                )?
+                .query_map(params![scope, d.kind, key, id], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect(),
             None => Vec::new(),
         };
-        let titled: Vec<String> = self.conn.prepare(
-            "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND title=?3
+        let titled: Vec<String> = self
+            .conn
+            .prepare(
+                "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND title=?3
                AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
-        )?.query_map(params![scope, d.kind, d.subject, id], |r| r.get(0))?
-            .filter_map(|r| r.ok()).collect();
+            )?
+            .query_map(params![scope, d.kind, d.subject, id], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
         predecessors.extend(keyed);
         predecessors.extend(titled);
         predecessors.sort();
@@ -356,26 +393,56 @@ impl Store {
 
     /// Search active decisions across scopes and hybrid-rank them. `kinds` is an optional
     /// type facet (`decision`/`fact`/`reference`/…); an empty slice applies no facet.
-    pub fn search(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Decision>> {
+    pub fn search(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+    ) -> Result<Vec<Decision>> {
         self.search_with(query, scopes, kinds, limit, false)
     }
 
     /// `search` with supersession control. `include_superseded` relaxes the active-only filter so
     /// retired decisions surface too — the historical arm of "what changed and why".
-    pub fn search_with(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<Decision>> {
+    pub fn search_with(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+    ) -> Result<Vec<Decision>> {
         if scopes.is_empty() {
             return Ok(Vec::new());
         }
         let (rows, rowids) = self.select_decisions(scopes, kinds, include_superseded)?;
-        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
+        let lexical =
+            self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
         let qe = self.query_embedding(query);
-        Ok(rank(query, qe.as_deref(), rows, lexical, now_epoch(), limit))
+        Ok(rank(
+            query,
+            qe.as_deref(),
+            rows,
+            lexical,
+            now_epoch(),
+            limit,
+        ))
     }
 
     /// Fetch candidate rows with their integer rowids, in scope and kind order. The
     /// rowid is the join key between the semantic candidates and the FTS5 lexical index.
-    fn select_decisions(&self, scopes: &[&str], kinds: &[String], include_superseded: bool) -> Result<(Vec<Decision>, Vec<i64>)> {
-        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL AND valid_until IS NULL" };
+    fn select_decisions(
+        &self,
+        scopes: &[&str],
+        kinds: &[String],
+        include_superseded: bool,
+    ) -> Result<(Vec<Decision>, Vec<i64>)> {
+        let validity = if include_superseded {
+            ""
+        } else {
+            " AND superseded_by IS NULL AND valid_until IS NULL"
+        };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -437,22 +504,39 @@ impl Store {
     ) -> Result<Vec<usize>> {
         let index: HashMap<i64, usize> = rowids.iter().enumerate().map(|(i, &r)| (r, i)).collect();
         let ordered = self.lexical_rowids(query, scopes, kinds, limit, include_superseded)?;
-        Ok(ordered.iter().filter_map(|r| index.get(r).copied()).collect())
+        Ok(ordered
+            .iter()
+            .filter_map(|r| index.get(r).copied())
+            .collect())
     }
 
     /// Run the FTS5 lexical query (narrow-then-broad over quoted terms) and return the matched
     /// rowids ordered by `bm25(decisions_fts, 0, 10, 5, 1)`. This is the exact engine cogitod's
     /// `MemoryRepository.lexicalSearchIds` runs, so parity is a query shape, not a re-derivation.
-    fn lexical_rowids(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<i64>> {
+    fn lexical_rowids(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+    ) -> Result<Vec<i64>> {
         let terms = crate::search::tokenize(query);
         if terms.is_empty() {
             return Ok(Vec::new());
         }
-        let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t.replace('"', ""))).collect();
+        let quoted: Vec<String> = terms
+            .iter()
+            .map(|t| format!("\"{}\"", t.replace('"', "")))
+            .collect();
         let narrow_floor = limit.min(5);
         let overfetch = limit.saturating_mul(10).max(limit);
 
-        let validity = if include_superseded { "" } else { " AND d.superseded_by IS NULL AND d.valid_until IS NULL" };
+        let validity = if include_superseded {
+            ""
+        } else {
+            " AND d.superseded_by IS NULL AND d.valid_until IS NULL"
+        };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -537,54 +621,115 @@ impl Store {
 
     /// Search active decisions across scopes and return full records (id + temporal
     /// window) in hybrid-ranked order. Structured counterpart of `search`.
-    pub fn search_records(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize) -> Result<Vec<Record>> {
+    pub fn search_records(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+    ) -> Result<Vec<Record>> {
         self.search_records_with(query, scopes, kinds, limit, false)
     }
 
     /// `search_records` with supersession control. With `include_superseded`, retired decisions
     /// surface too and carry their `superseded_by` / `valid_until` so a caller can follow the chain.
-    pub fn search_records_with(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<Record>> {
-        Ok(self.rank_records(query, scopes, kinds, limit, include_superseded)?.0)
+    pub fn search_records_with(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+    ) -> Result<Vec<Record>> {
+        Ok(self
+            .rank_records(query, scopes, kinds, limit, include_superseded)?
+            .0)
     }
 
     /// `search_records_with` returning per-result ranking explanations alongside.
-    pub fn search_records_explain(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Explained> {
-        let (records, explanations) = self.rank_records(query, scopes, kinds, limit, include_superseded)?;
+    pub fn search_records_explain(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+    ) -> Result<Explained> {
+        let (records, explanations) =
+            self.rank_records(query, scopes, kinds, limit, include_superseded)?;
         Ok(records.into_iter().zip(explanations).collect())
     }
 
     /// Search and split into `(results, drops)`: the top `limit` and the next `drop_count`
     /// near-miss candidates, each with its ranking explanation. The drops are the candidates
     /// that fused but lost the top-N slice — "what didn't make it, and by how much".
-    pub fn search_records_drops(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool, drop_count: usize) -> Result<(Explained, Explained)> {
-        let (records, explanations) = self.rank_records(query, scopes, kinds, limit + drop_count, include_superseded)?;
+    pub fn search_records_drops(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+        drop_count: usize,
+    ) -> Result<(Explained, Explained)> {
+        let (records, explanations) =
+            self.rank_records(query, scopes, kinds, limit + drop_count, include_superseded)?;
         let pairs: Vec<(Record, RankExplanation)> = records.into_iter().zip(explanations).collect();
         let (results, drops) = pairs.split_at(pairs.len().min(limit));
         Ok((results.to_vec(), drops.to_vec()))
     }
 
-    fn rank_records(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<(Vec<Record>, Vec<RankExplanation>)> {
+    fn rank_records(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        kinds: &[String],
+        limit: usize,
+        include_superseded: bool,
+    ) -> Result<(Vec<Record>, Vec<RankExplanation>)> {
         if scopes.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
         let (rows, rowids) = self.select_records(scopes, kinds, include_superseded)?;
-        let lexical = self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
+        let lexical =
+            self.lexical_indices(query, &rowids, scopes, kinds, limit, include_superseded)?;
         let qe = self.query_embedding(query);
-        Ok(rank_by(query, qe.as_deref(), rows, lexical, now_epoch(), limit, |d| RankRow {
-            importance: d.importance,
-            kind: &d.kind,
-            date: &d.date,
-            updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
-            access_count: d.access_count,
-            effectiveness: d.effectiveness,
-            embedding: d.embedding.as_deref(),
-            title: &d.title,
-            content: &d.content,
-        }))
+        Ok(rank_by(
+            query,
+            qe.as_deref(),
+            rows,
+            lexical,
+            now_epoch(),
+            limit,
+            |d| RankRow {
+                importance: d.importance,
+                kind: &d.kind,
+                date: &d.date,
+                updated_at: if d.updated_at.is_empty() {
+                    None
+                } else {
+                    Some(&d.updated_at)
+                },
+                access_count: d.access_count,
+                effectiveness: d.effectiveness,
+                embedding: d.embedding.as_deref(),
+                title: &d.title,
+                content: &d.content,
+            },
+        ))
     }
 
-    fn select_records(&self, scopes: &[&str], kinds: &[String], include_superseded: bool) -> Result<(Vec<Record>, Vec<i64>)> {
-        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL AND valid_until IS NULL" };
+    fn select_records(
+        &self,
+        scopes: &[&str],
+        kinds: &[String],
+        include_superseded: bool,
+    ) -> Result<(Vec<Record>, Vec<i64>)> {
+        let validity = if include_superseded {
+            ""
+        } else {
+            " AND superseded_by IS NULL AND valid_until IS NULL"
+        };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
             String::new()
@@ -646,7 +791,11 @@ impl Store {
     /// Fetch a record by id, optionally reaching past supersession (historical mode). The
     /// `superseded_by` / `valid_until` fields describe where the record sits in its chain.
     pub fn get_record_any(&self, id: &str, include_superseded: bool) -> Result<Option<Record>> {
-        let validity = if include_superseded { "" } else { " AND superseded_by IS NULL" };
+        let validity = if include_superseded {
+            ""
+        } else {
+            " AND superseded_by IS NULL"
+        };
         let sql = format!(
             "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
                     superseded_by,valid_from,valid_until,updated_at,
@@ -701,7 +850,12 @@ impl Store {
         Ok(out)
     }
 
-    pub fn link_git(&self, decision_id: &str, commit_hash: &str, commit_subject: &str) -> Result<()> {
+    pub fn link_git(
+        &self,
+        decision_id: &str,
+        commit_hash: &str,
+        commit_subject: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO decision_git_refs (decision_id, commit_hash, commit_subject)
              VALUES (?1,?2,?3)",
@@ -732,12 +886,27 @@ impl Store {
                 } else {
                     digest(&format!("{identity}\n{content_digest}"))
                 };
-                let commit = if d.kind == "commit" { d.sha.clone() } else { String::new() };
+                let commit = if d.kind == "commit" {
+                    d.sha.clone()
+                } else {
+                    String::new()
+                };
                 let importance = d.importance.clamp(0.0, 1.0);
                 let epoch = iso_to_epoch(&d.date).unwrap_or(0);
                 stmt.execute(params![
-                    id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
-                    d.date, scope, content_digest, identity, epoch
+                    id,
+                    d.kind,
+                    d.subject,
+                    d.body,
+                    importance,
+                    d.source,
+                    d.author,
+                    commit,
+                    d.date,
+                    scope,
+                    content_digest,
+                    identity,
+                    epoch
                 ])?;
             }
         }
@@ -778,9 +947,11 @@ impl Store {
             "INSERT INTO feedback_log (id, memory_id, helpful, delta) VALUES (?1,?2,?3,?4)",
             params![log_id, id, if helpful { 1 } else { 0 }, delta],
         )?;
-        let eff: f64 = self
-            .conn
-            .query_row("SELECT effectiveness FROM decisions WHERE id=?1", params![id], |r| r.get(0))?;
+        let eff: f64 = self.conn.query_row(
+            "SELECT effectiveness FROM decisions WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
         Ok(Some(eff))
     }
 }
@@ -822,8 +993,17 @@ fn recency_weight_for(query: &str) -> f64 {
     let lower = query.to_lowercase();
     const CURRENT_WORDS: &[&str] = &["current", "currently", "latest", "now", "today", "present"];
     const PAST_WORDS: &[&str] = &[
-        "originally", "first", "initial", "initially", "previously", "formerly", "history",
-        "historical", "past", "earlier", "before",
+        "originally",
+        "first",
+        "initial",
+        "initially",
+        "previously",
+        "formerly",
+        "history",
+        "historical",
+        "past",
+        "earlier",
+        "before",
     ];
     const CURRENT_PHRASES: &[&str] = &["as of", "most recent", "up to date", "up-to-date"];
     const PAST_PHRASES: &[&str] = &["used to"];
@@ -877,18 +1057,37 @@ pub type Explained = Vec<(Record, RankExplanation)>;
 /// the caller, already narrow-then-broad), then slice. Recency enters through the semantic arm's
 /// hybrid score — floored, so age cannot bury a best match — never as a multiplicative gate on
 /// the fused score.
-fn rank(query: &str, query_embedding: Option<&[f32]>, rows: Vec<Decision>, lexical_order: Vec<usize>, now: i64, limit: usize) -> Vec<Decision> {
-    rank_by(query, query_embedding, rows, lexical_order, now, limit, |d| RankRow {
-        importance: d.importance,
-        kind: &d.kind,
-        date: &d.date,
-        updated_at: if d.updated_at.is_empty() { None } else { Some(&d.updated_at) },
-        access_count: d.access_count,
-        effectiveness: d.effectiveness,
-        embedding: d.embedding.as_deref(),
-        title: &d.subject,
-        content: &d.body,
-    })
+fn rank(
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    rows: Vec<Decision>,
+    lexical_order: Vec<usize>,
+    now: i64,
+    limit: usize,
+) -> Vec<Decision> {
+    rank_by(
+        query,
+        query_embedding,
+        rows,
+        lexical_order,
+        now,
+        limit,
+        |d| RankRow {
+            importance: d.importance,
+            kind: &d.kind,
+            date: &d.date,
+            updated_at: if d.updated_at.is_empty() {
+                None
+            } else {
+                Some(&d.updated_at)
+            },
+            access_count: d.access_count,
+            effectiveness: d.effectiveness,
+            embedding: d.embedding.as_deref(),
+            title: &d.subject,
+            content: &d.body,
+        },
+    )
     .0
 }
 
@@ -938,7 +1137,8 @@ fn rank_by<T>(
             } else {
                 format!("{}\n{}", f.title, f.content)
             };
-            let lexical_gate_score = crate::relevance::lexical_score(query, f.content, &lexical_text);
+            let lexical_gate_score =
+                crate::relevance::lexical_score(query, f.content, &lexical_text);
             Capsule {
                 sim,
                 embedded,
@@ -957,7 +1157,8 @@ fn rank_by<T>(
         // frequently-surfaced memory decays slower than its raw age would suggest.
         let stability = c.half_life * (1.0 + (1.0 + c.access_count as f64).ln());
         let decay = recency_decay(c.age_days, stability);
-        (RERANK_W_SIM * c.sim + RERANK_W_IMPORTANCE * c.importance
+        (RERANK_W_SIM * c.sim
+            + RERANK_W_IMPORTANCE * c.importance
             + RERANK_W_EFFECTIVENESS * c.effectiveness)
             * decay
             * recency_mult
@@ -1016,7 +1217,10 @@ fn rank_by<T>(
         }
         for (rank, &i) in lexical_order.iter().take(12).enumerate() {
             let c = &capsules[i];
-            eprintln!("  LEX[{rank}] sim={:.3} lex_gate={:.4} fused={:.5}", c.sim, c.lexical_gate_score, scores[i]);
+            eprintln!(
+                "  LEX[{rank}] sim={:.3} lex_gate={:.4} fused={:.5}",
+                c.sim, c.lexical_gate_score, scores[i]
+            );
         }
     }
 
@@ -1033,7 +1237,11 @@ fn rank_by<T>(
     // final score sort — so a filtered-out noise row can't block a genuine match from the
     // top-N slice. Must run on the full fused set, not just the eventual top `limit`.
     order.retain(|&i| crate::relevance::passes(capsules[i].sim, capsules[i].lexical_gate_score));
-    order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        scores[b]
+            .partial_cmp(&scores[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     order.truncate(limit);
 
     let mut row_vec: Vec<Option<T>> = rows.into_iter().map(Some).collect();
@@ -1150,7 +1358,12 @@ mod tests {
         }
     }
 
-    fn decision(subject: &str, body: &str, importance: f64, embedding: Option<Vec<f32>>) -> Decision {
+    fn decision(
+        subject: &str,
+        body: &str,
+        importance: f64,
+        embedding: Option<Vec<f32>>,
+    ) -> Decision {
         Decision {
             sha: String::new(),
             author: String::new(),
@@ -1201,7 +1414,12 @@ mod tests {
         // "feline" shares no token with "cat", but its embedding matches — semantic
         // similarity must rank it first and must not require a lexical hit.
         let rows = vec![
-            decision("feline", "a small domesticated animal", 0.5, Some(vec![1.0, 0.0])),
+            decision(
+                "feline",
+                "a small domesticated animal",
+                0.5,
+                Some(vec![1.0, 0.0]),
+            ),
             decision("dog", "a loyal companion", 0.5, Some(vec![0.0, 1.0])),
         ];
         let q = FakeEmbedder.embed("cat").unwrap();
@@ -1253,13 +1471,23 @@ mod tests {
         let store = temp_store();
         for i in 0..5 {
             store
-                .capture(&decision(&format!("sqlite postgres {i}"), "both", 0.5, None), "global", None)
+                .capture(
+                    &decision(&format!("sqlite postgres {i}"), "both", 0.5, None),
+                    "global",
+                    None,
+                )
                 .unwrap();
         }
         store
-            .capture(&decision("sqlite sqlite sqlite sqlite", "no second token", 0.5, None), "global", None)
+            .capture(
+                &decision("sqlite sqlite sqlite sqlite", "no second token", 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
-        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        let hits = store
+            .search("sqlite postgres", &["global"], &[], 10)
+            .unwrap();
         assert_eq!(hits.len(), 5);
         assert!(hits.iter().all(|h| h.subject.contains("postgres")));
     }
@@ -1270,12 +1498,22 @@ mod tests {
         // partial-match row still surfaces.
         let store = temp_store();
         store
-            .capture(&decision("sqlite postgres", "both", 0.5, None), "global", None)
+            .capture(
+                &decision("sqlite postgres", "both", 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
         store
-            .capture(&decision("sqlite", "only one term", 0.5, None), "global", None)
+            .capture(
+                &decision("sqlite", "only one term", 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
-        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        let hits = store
+            .search("sqlite postgres", &["global"], &[], 10)
+            .unwrap();
         assert_eq!(hits.len(), 2);
     }
 
@@ -1285,12 +1523,22 @@ mod tests {
         // handles idf + length normalisation natively — this is delegated to SQLite, not derived.
         let store = temp_store();
         store
-            .capture(&decision("worktree long", &("node_modules ".repeat(300)), 0.5, None), "global", None)
+            .capture(
+                &decision("worktree long", &("node_modules ".repeat(300)), 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
         store
-            .capture(&decision("worktree corruption", "corruption", 0.5, None), "global", None)
+            .capture(
+                &decision("worktree corruption", "corruption", 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
-        let hits = store.search("worktree corruption", &["global"], &[], 10).unwrap();
+        let hits = store
+            .search("worktree corruption", &["global"], &[], 10)
+            .unwrap();
         assert_eq!(hits[0].subject, "worktree corruption");
     }
 
@@ -1298,7 +1546,11 @@ mod tests {
     fn feedback_moves_effectiveness_and_is_clamped() {
         let store = temp_store();
         let id = store
-            .capture(&decision("use sqlite", "single file local-first", 0.5, None), "global", None)
+            .capture(
+                &decision("use sqlite", "single file local-first", 0.5, None),
+                "global",
+                None,
+            )
             .unwrap();
         // Ungraded prior is 0.5; a helpful verdict raises it by 0.05.
         let eff = store.feedback(&id, true).unwrap().unwrap();
@@ -1314,17 +1566,35 @@ mod tests {
     fn historical_mode_surfaces_supersession_chain() {
         let store = temp_store();
         store
-            .capture_external(&decision("database choice", "sqlite", 0.5, None), "global", "aaa", None, None, None)
+            .capture_external(
+                &decision("database choice", "sqlite", 0.5, None),
+                "global",
+                "aaa",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store
-            .capture_external(&decision("database choice v2", "postgres now", 0.5, None), "global", "bbb", None, None, Some("aaa"))
+            .capture_external(
+                &decision("database choice v2", "postgres now", 0.5, None),
+                "global",
+                "bbb",
+                None,
+                None,
+                Some("aaa"),
+            )
             .unwrap();
         // Active search returns only the current (non-superseded) record.
-        let hits = store.search("sqlite postgres", &["global"], &[], 10).unwrap();
+        let hits = store
+            .search("sqlite postgres", &["global"], &[], 10)
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].subject, "database choice v2");
         // Historical search returns both.
-        let hits = store.search_records_with("sqlite postgres", &["global"], &[], 10, true).unwrap();
+        let hits = store
+            .search_records_with("sqlite postgres", &["global"], &[], 10, true)
+            .unwrap();
         assert_eq!(hits.len(), 2);
         // The chain walks aaa -> bbb.
         let chain = store.supersession_chain("aaa", 20).unwrap();
@@ -1338,15 +1608,23 @@ mod tests {
         let store = temp_store();
         for i in 0..3 {
             store
-                .capture(&decision(&format!("sqlite postgres {i}"), "both terms", 0.5, None), "global", None)
+                .capture(
+                    &decision(&format!("sqlite postgres {i}"), "both terms", 0.5, None),
+                    "global",
+                    None,
+                )
                 .unwrap();
         }
-        let explained = store.search_records_explain("sqlite postgres", &["global"], &[], 3, false).unwrap();
+        let explained = store
+            .search_records_explain("sqlite postgres", &["global"], &[], 3, false)
+            .unwrap();
         assert_eq!(explained.len(), 3);
         assert!(explained.iter().all(|(_, e)| e.lexical_rank.is_some()));
         assert!(explained.iter().all(|(_, e)| e.semantic_rank.is_none()));
         assert!(explained.iter().all(|(_, e)| e.rrf_score > 0.0));
-        let (results, drops) = store.search_records_drops("sqlite postgres", &["global"], &[], 1, false, 5).unwrap();
+        let (results, drops) = store
+            .search_records_drops("sqlite postgres", &["global"], &[], 1, false, 5)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(drops.len(), 2);
     }

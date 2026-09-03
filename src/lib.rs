@@ -31,8 +31,8 @@
 pub mod answer;
 pub mod db;
 pub mod embed;
-pub mod miner;
 pub mod mcp;
+pub mod miner;
 pub mod relevance;
 pub mod search;
 pub mod store;

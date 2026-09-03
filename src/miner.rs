@@ -67,7 +67,10 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
     let mut decisions: Vec<Decision> = Vec::new();
 
     // 1. commit subjects + bodies
-    let log = git(repo, &["log", "--all", "--format=%H%x00%an%x00%aI%x00%s%x00%b%x1e"])?;
+    let log = git(
+        repo,
+        &["log", "--all", "--format=%H%x00%an%x00%aI%x00%s%x00%b%x1e"],
+    )?;
     for entry in log.split('\u{1e}') {
         let f: Vec<&str> = entry.split('\0').collect();
         if f.len() >= 5 && f[0].trim().len() == 40 {
@@ -95,8 +98,11 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
         let Ok(content) = git(repo, &["show", head.as_str()]) else {
             continue;
         };
-        let last = git(repo, &["log", "-1", "--format=%H%x00%an%x00%aI", "--", file])
-            .unwrap_or_default();
+        let last = git(
+            repo,
+            &["log", "-1", "--format=%H%x00%an%x00%aI", "--", file],
+        )
+        .unwrap_or_default();
         let m: Vec<&str> = last.split('\0').collect();
         let (sha, author, date) = if m.len() >= 3 {
             (

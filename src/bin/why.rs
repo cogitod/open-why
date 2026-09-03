@@ -4,7 +4,11 @@ use open_why::{answer, db, embed, mcp, miner, store, RankExplanation, Record};
 
 /// Ask why a decision was made — with the evidence.
 #[derive(Parser)]
-#[command(name = "why", version, about = "Ask why a decision was made — with the evidence.")]
+#[command(
+    name = "why",
+    version,
+    about = "Ask why a decision was made — with the evidence."
+)]
 struct Cli {
     /// The question to answer. Bare `why "..."` asks directly; no subcommand needed.
     #[arg(value_name = "QUESTION", num_args = 1.., trailing_var_arg = true)]
@@ -150,7 +154,12 @@ fn main() -> Result<()> {
                 };
                 let result = match id.as_deref() {
                     Some(id) if !id.is_empty() => store.capture_external(
-                        &d, &scope, id, valid_from.as_deref(), fact_key.as_deref(), supersedes.as_deref(),
+                        &d,
+                        &scope,
+                        id,
+                        valid_from.as_deref(),
+                        fact_key.as_deref(),
+                        supersedes.as_deref(),
                     ),
                     _ => store.capture(&d, &scope, supersedes.as_deref()),
                 };
@@ -158,21 +167,48 @@ fn main() -> Result<()> {
                 println!("captured decision {id} (scope: {scope})");
                 Ok(())
             }
-            Command::Search { query, limit, scope, types, historical, explain, explain_drops } => {
+            Command::Search {
+                query,
+                limit,
+                scope,
+                types,
+                historical,
+                explain,
+                explain_drops,
+            } => {
                 let store = db::Store::open_default()?;
                 let scope = scope.unwrap_or_else(|| "global".to_string());
                 if explain_drops {
-                    let (results, drops) = store.search_records_drops(&query, &[scope.as_str()], &types, limit, historical, 5)?;
+                    let (results, drops) = store.search_records_drops(
+                        &query,
+                        &[scope.as_str()],
+                        &types,
+                        limit,
+                        historical,
+                        5,
+                    )?;
                     print!("{}", render_explain(results, true));
                     if !drops.is_empty() {
                         println!("--- near-miss (did not make the top-N) ---");
                         print!("{}", render_explain(drops, true));
                     }
                 } else if explain {
-                    let hits = store.search_records_explain(&query, &[scope.as_str()], &types, limit, historical)?;
+                    let hits = store.search_records_explain(
+                        &query,
+                        &[scope.as_str()],
+                        &types,
+                        limit,
+                        historical,
+                    )?;
                     print!("{}", render_explain(hits, false));
                 } else if historical {
-                    let hits = store.search_records_with(&query, &[scope.as_str()], &types, limit, true)?;
+                    let hits = store.search_records_with(
+                        &query,
+                        &[scope.as_str()],
+                        &types,
+                        limit,
+                        true,
+                    )?;
                     print!("{}", answer::render_records(hits));
                 } else {
                     let hits = store.search(&query, &[scope.as_str()], &types, limit)?;
@@ -189,7 +225,11 @@ fn main() -> Result<()> {
                     } else {
                         for (i, r) in chain.iter().enumerate() {
                             let label = if i + 1 == chain.len() {
-                                if r.superseded_by.is_some() { "superseded → (successor not in store)" } else { "current" }
+                                if r.superseded_by.is_some() {
+                                    "superseded → (successor not in store)"
+                                } else {
+                                    "current"
+                                }
                             } else if i == 0 {
                                 "oldest"
                             } else {
@@ -218,7 +258,11 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            Command::Link { commit, decision, subject } => {
+            Command::Link {
+                commit,
+                decision,
+                subject,
+            } => {
                 let store = db::Store::open_default()?;
                 let subject = subject.unwrap_or_default();
                 store.link_git(&decision, &commit, &subject)?;
@@ -228,8 +272,9 @@ fn main() -> Result<()> {
             Command::Import { file } => {
                 let store = db::Store::open_default()?;
                 let text = match file {
-                    Some(path) => std::fs::read_to_string(&path)
-                        .with_context(|| format!("read {path}"))?,
+                    Some(path) => {
+                        std::fs::read_to_string(&path).with_context(|| format!("read {path}"))?
+                    }
                     None => {
                         use std::io::Read;
                         let mut buf = String::new();
@@ -247,13 +292,20 @@ fn main() -> Result<()> {
                 println!("model ready at {}", dir.display());
                 Ok(())
             }
-            Command::Feedback { id, helpful, not_helpful } => {
+            Command::Feedback {
+                id,
+                helpful,
+                not_helpful,
+            } => {
                 if helpful == not_helpful {
                     anyhow::bail!("pass exactly one of --helpful or --not-helpful");
                 }
                 let store = db::Store::open_default()?;
                 match store.feedback(&id, helpful)? {
-                    Some(eff) => println!("recorded {} feedback on {id}: effectiveness now {eff:.3}", if helpful { "helpful" } else { "not-helpful" }),
+                    Some(eff) => println!(
+                        "recorded {} feedback on {id}: effectiveness now {eff:.3}",
+                        if helpful { "helpful" } else { "not-helpful" }
+                    ),
                     None => println!("no active decision with id {id}"),
                 }
                 Ok(())
@@ -280,7 +332,11 @@ fn ask_bare(cli: &Cli) -> Result<()> {
 fn render_explain(pairs: Vec<(Record, RankExplanation)>, numbered: bool) -> String {
     let mut out = String::new();
     for (idx, (r, e)) in pairs.into_iter().enumerate() {
-        let prefix = if numbered { format!("#{} ", idx + 1) } else { String::new() };
+        let prefix = if numbered {
+            format!("#{} ", idx + 1)
+        } else {
+            String::new()
+        };
         out.push_str(&format!("- {}{}\n", prefix, r.title));
         out.push_str(&format!("  {} · {} · {}\n", r.date, r.author, r.source));
         let sem = e

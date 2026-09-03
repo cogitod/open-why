@@ -16,26 +16,107 @@ const LEXICAL_COMMON_WEIGHT: f64 = 0.20;
 /// Query words that carry no topic; dropped from the query side only. `MemorySearchUtils.ts:226`.
 const LEXICAL_STOPWORDS: &[&str] = &[
     "the", "and", "for", "are", "was", "were", "been", "being", "have", "has", "had", "does",
-    "did", "doing", "you", "your", "our", "its", "their", "this", "that", "these", "those",
-    "what", "which", "who", "whom", "whose", "when", "where", "why", "how", "can", "could",
-    "should", "would", "will", "shall", "may", "might", "must", "with", "from", "into", "onto",
-    "about", "over", "under", "between", "through", "during", "before", "after", "above",
-    "below", "again", "once", "here", "there", "then", "than", "too", "very", "just", "but",
-    "because", "while", "until", "also", "get", "got", "use", "used", "using", "via", "per",
+    "did", "doing", "you", "your", "our", "its", "their", "this", "that", "these", "those", "what",
+    "which", "who", "whom", "whose", "when", "where", "why", "how", "can", "could", "should",
+    "would", "will", "shall", "may", "might", "must", "with", "from", "into", "onto", "about",
+    "over", "under", "between", "through", "during", "before", "after", "above", "below", "again",
+    "once", "here", "there", "then", "than", "too", "very", "just", "but", "because", "while",
+    "until", "also", "get", "got", "use", "used", "using", "via", "per",
 ];
 
 /// Everyday-world vocabulary, weighted down as admission evidence — a technical term is
 /// evidence in this corpus, an everyday-world noun almost never is. `MemorySearchUtils.ts:267`.
 const LEXICAL_COMMON_TERMS: &[&str] = &[
-    "water", "air", "heat", "wet", "cool", "food", "bread", "tea", "coffee", "milk", "sugar",
-    "salt", "meal", "dish", "tree", "flower", "grass", "animal", "bird", "fish", "plant",
-    "garden", "house", "room", "door", "road", "city", "town", "country", "weather", "rain",
-    "snow", "wind", "moon", "sky", "sea", "ocean", "river", "mountain", "sand", "wood", "cloth",
-    "music", "song", "sport", "movie", "film", "photo", "good", "better", "best", "bad", "worse",
-    "worst", "nice", "great", "poor", "small", "large", "big", "little", "tiny", "huge", "easy",
-    "difficult", "heavy", "loud", "quiet", "bright", "happy", "much", "many", "more", "most",
-    "less", "least", "few", "several", "want", "love", "hate", "feel", "seem", "eat", "drink",
-    "walk", "buy", "sell", "die", "wear",
+    "water",
+    "air",
+    "heat",
+    "wet",
+    "cool",
+    "food",
+    "bread",
+    "tea",
+    "coffee",
+    "milk",
+    "sugar",
+    "salt",
+    "meal",
+    "dish",
+    "tree",
+    "flower",
+    "grass",
+    "animal",
+    "bird",
+    "fish",
+    "plant",
+    "garden",
+    "house",
+    "room",
+    "door",
+    "road",
+    "city",
+    "town",
+    "country",
+    "weather",
+    "rain",
+    "snow",
+    "wind",
+    "moon",
+    "sky",
+    "sea",
+    "ocean",
+    "river",
+    "mountain",
+    "sand",
+    "wood",
+    "cloth",
+    "music",
+    "song",
+    "sport",
+    "movie",
+    "film",
+    "photo",
+    "good",
+    "better",
+    "best",
+    "bad",
+    "worse",
+    "worst",
+    "nice",
+    "great",
+    "poor",
+    "small",
+    "large",
+    "big",
+    "little",
+    "tiny",
+    "huge",
+    "easy",
+    "difficult",
+    "heavy",
+    "loud",
+    "quiet",
+    "bright",
+    "happy",
+    "much",
+    "many",
+    "more",
+    "most",
+    "less",
+    "least",
+    "few",
+    "several",
+    "want",
+    "love",
+    "hate",
+    "feel",
+    "seem",
+    "eat",
+    "drink",
+    "walk",
+    "buy",
+    "sell",
+    "die",
+    "wear",
 ];
 
 /// Split on Unicode letter/digit runs, not whitespace, so punctuation never glues to a token.
@@ -88,12 +169,22 @@ pub fn rag_composite_score(query: &str, content: &str) -> f64 {
     let weigh = |terms: &std::collections::HashSet<&str>| -> f64 {
         terms
             .iter()
-            .map(|t| if LEXICAL_COMMON_TERMS.contains(t) { LEXICAL_COMMON_WEIGHT } else { 1.0 })
+            .map(|t| {
+                if LEXICAL_COMMON_TERMS.contains(t) {
+                    LEXICAL_COMMON_WEIGHT
+                } else {
+                    1.0
+                }
+            })
             .sum()
     };
 
     let rel = weigh(&matched) / weigh(&query_tokens);
-    let sup = if content.chars().count() > 20 { 0.7 } else { 0.4 };
+    let sup = if content.chars().count() > 20 {
+        0.7
+    } else {
+        0.4
+    };
     let use_ = (rel + sup) / 2.0;
     rel * 0.4 + sup * 0.3 + use_ * 0.3
 }
@@ -161,7 +252,8 @@ mod tests {
     #[test]
     fn stopword_only_query_falls_back_to_all_tokens() {
         // "why does this" is entirely stopwords; scoring must not divide by zero.
-        let score = rag_composite_score("why does this", "some unrelated content over twenty chars");
+        let score =
+            rag_composite_score("why does this", "some unrelated content over twenty chars");
         assert!((0.0..=1.0).contains(&score));
     }
 }
