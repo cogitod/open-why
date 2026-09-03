@@ -548,7 +548,7 @@ impl Store {
     }
 
     /// `search_records_with` returning per-result ranking explanations alongside.
-    pub fn search_records_explain(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Vec<(Record, RankExplanation)>> {
+    pub fn search_records_explain(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool) -> Result<Explained> {
         let (records, explanations) = self.rank_records(query, scopes, kinds, limit, include_superseded)?;
         Ok(records.into_iter().zip(explanations).collect())
     }
@@ -556,7 +556,7 @@ impl Store {
     /// Search and split into `(results, drops)`: the top `limit` and the next `drop_count`
     /// near-miss candidates, each with its ranking explanation. The drops are the candidates
     /// that fused but lost the top-N slice — "what didn't make it, and by how much".
-    pub fn search_records_drops(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool, drop_count: usize) -> Result<(Vec<(Record, RankExplanation)>, Vec<(Record, RankExplanation)>)> {
+    pub fn search_records_drops(&self, query: &str, scopes: &[&str], kinds: &[String], limit: usize, include_superseded: bool, drop_count: usize) -> Result<(Explained, Explained)> {
         let (records, explanations) = self.rank_records(query, scopes, kinds, limit + drop_count, include_superseded)?;
         let pairs: Vec<(Record, RankExplanation)> = records.into_iter().zip(explanations).collect();
         let (results, drops) = pairs.split_at(pairs.len().min(limit));
@@ -804,7 +804,7 @@ const RECENCY_SUPPRESS: f64 = 0.3;
 
 /// Ebbinghaus recency decay with a floor: `2^(-age/halfLife)`, clamped at RECENCY_DECAY_FLOOR.
 fn recency_decay(age_days: f64, half_life_days: f64) -> f64 {
-    if !(half_life_days > 0.0) || !age_days.is_finite() {
+    if half_life_days <= 0.0 || half_life_days.is_nan() || !age_days.is_finite() {
         return RECENCY_DECAY_FLOOR;
     }
     (2.0f64.powf(-age_days.max(0.0) / half_life_days)).max(RECENCY_DECAY_FLOOR)
@@ -867,6 +867,10 @@ pub struct RankExplanation {
     pub lexical_rank: Option<usize>,
     pub rrf_score: f64,
 }
+
+/// A search result set paired with its ranking explanation, as returned by the `--explain`
+/// and `--explain-drops` paths.
+pub type Explained = Vec<(Record, RankExplanation)>;
 
 /// Hybrid rerank matching cogitod's `searchMemoriesHybrid`: reciprocal-rank fusion of a
 /// semantic arm (sorted by hybrid score) and a lexical arm (the FTS5 `bm25()` order supplied by
