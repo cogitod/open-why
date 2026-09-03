@@ -149,8 +149,8 @@ The public surface is `Store`, `Decision`, `Record`, `ExternalDecision`, and the
 ## Use as an MCP server
 
 `why serve` speaks stdio MCP and exposes `open-why_ask`, `open-why_index`,
-`open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`, and
-`open-why_link`.
+`open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`,
+`open-why_link`, and `open-why_feedback`.
 
 opencode (`~/.config/opencode/opencode.jsonc`):
 
@@ -216,19 +216,22 @@ platform (via `ort`'s `download-binaries`). The embedding model is fetched with
 `why fetch-model` (or loaded from `OPEN_WHY_EMBED_MODEL_PATH` at runtime), not
 vendored.
 
-## Contributing
+### Building without network access
 
-Issues and PRs welcome. CI (`cargo build --release`, `cargo clippy -- -D warnings`,
-`cargo test`, plus a secret/leak scan) runs on every push and PR — run the same
-locally before pushing. Enable the pre-commit leak check once per clone:
+`cargo build` fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` (via the
+`ort` crate) unless it's told not to. To build offline or air-gapped, point
+`ORT_LIB_LOCATION` at a pre-installed onnxruntime instead — no `Cargo.toml` change
+needed:
 
 ```bash
-git config core.hooksPath hooks
+ORT_LIB_LOCATION=/path/to/onnxruntime cargo build --release
 ```
 
-It scans staged files for secrets (keys, tokens) and for unreviewed exports of real
-internal records (see `hooks/check-leaks.sh`); reviewed fixture paths are listed in
-`hooks/leak-allowlist.txt`.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome — this project
+follows the [Contributor Covenant](CODE_OF_CONDUCT.md); report security issues per
+[SECURITY.md](SECURITY.md) rather than in a public issue.
 
 ## License
 
