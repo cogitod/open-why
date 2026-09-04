@@ -1,14 +1,13 @@
 //! # open-why
 //!
-//! The thin "why" layer for AI agents — a self-contained Rust core that remembers
-//! *why* decisions were made, with the evidence attached, and recalls them by hybrid
-//! rank (semantic + lexical + recency + importance).
+//! A self-contained Rust core for recording why code decisions were made and
+//! retrieving their source evidence, current rationale, and history.
 //!
 //! open-why is deliberately narrow: it is **not** a general agent-memory store. It
 //! stores decision records (`decision` / `fact` / `reference` / `pattern` / `doc` /
 //! `project` / `observation`) with temporal identity (`valid_from` / `valid_until` /
-//! `superseded_by` — decisions are superseded, never deleted) and git linkage
-//! (commit ↔ decision), and it ranks recall with a stable, regression-tested model:
+//! `superseded_by`; decisions are superseded, never deleted) and Git linkage
+//! (commit to decision). It ranks recall with a regression-tested model:
 //! reciprocal-rank fusion of a semantic arm (local MiniLM embeddings) and a lexical
 //! arm (FTS5-style BM25), weighted by importance and effectiveness and decayed by
 //! Ebbinghaus recency with spaced-repetition stability.
@@ -37,7 +36,7 @@ pub mod relevance;
 pub mod search;
 pub mod store;
 
-// Convenience re-exports — the library surface.
+// Convenience re-exports for the library surface.
 pub use db::{default_path, RankExplanation, Store};
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
 pub use store::{

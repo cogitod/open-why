@@ -23,7 +23,7 @@ const LEXICAL_STOPWORDS: &[&str] = &[
     "until", "also", "get", "got", "use", "used", "using", "via", "per",
 ];
 
-/// Everyday-world vocabulary, weighted down as admission evidence — a technical term is
+/// Everyday-world vocabulary is weighted down as admission evidence. A technical term is
 /// evidence in a technical corpus, an everyday-world noun almost never is.
 const LEXICAL_COMMON_TERMS: &[&str] = &[
     "water",
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn lexical_only_candidate_needs_utility_not_bypass() {
         // similarity == 0.0 must not be refused by the floor, and must not get a free pass
-        // from the bypass branch either — it lives or dies on lexical_score alone.
+        // from the bypass branch either; it lives or dies on lexical_score alone.
         assert!(passes(0.0, RAG_UTILITY_THRESHOLD));
         assert!(!passes(0.0, RAG_UTILITY_THRESHOLD - 0.01));
     }

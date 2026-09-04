@@ -4,12 +4,12 @@ use open_why::{
     answer, db, embed, mcp, miner, store, CurrentRecordResolution, RankExplanation, Record,
 };
 
-/// Ask why a decision was made — with the evidence.
+/// Ask why a decision was made, with its evidence.
 #[derive(Parser)]
 #[command(
     name = "why",
     version,
-    about = "Ask why a decision was made — with the evidence."
+    about = "Ask why a decision was made, with its evidence."
 )]
 struct Cli {
     /// The question to answer. Bare `why "..."` asks directly; no subcommand needed.
@@ -361,11 +361,11 @@ fn render_explain(pairs: Vec<(Record, RankExplanation)>, numbered: bool) -> Stri
         let sem = e
             .semantic_rank
             .map(|r| format!("sem#{r}"))
-            .unwrap_or_else(|| "sem—".to_string());
+            .unwrap_or_else(|| "sem=n/a".to_string());
         let lex = e
             .lexical_rank
             .map(|r| format!("lex#{r}"))
-            .unwrap_or_else(|| "lex—".to_string());
+            .unwrap_or_else(|| "lex=n/a".to_string());
         out.push_str(&format!(
             "  sim={:.3} imp={:.2} eff={:.2} age={:.0}d dec={:.2} hyb={:.3} {sem} {lex} rrf={:.4}\n",
             e.similarity, e.importance, e.effectiveness, e.age_days, e.recency_decay, e.hybrid_score, e.rrf_score

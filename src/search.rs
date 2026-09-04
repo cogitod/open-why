@@ -1,4 +1,4 @@
-/// FTS5 stopwords — high-frequency tokens that match nearly the whole corpus.
+/// FTS5 stopwords: high-frequency tokens that match nearly the whole corpus.
 const FTS_STOPWORDS: &[&str] = &[
     "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is", "are", "was", "were", "be",
     "been", "with", "as", "at", "by", "it", "its", "this", "that", "these", "those", "from", "we",
