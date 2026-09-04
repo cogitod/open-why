@@ -4,6 +4,12 @@ use std::path::{Path, PathBuf};
 pub const CURRENT_RATIONALE_CONTRACT: &str = "open-why.current-rationale/v1";
 pub const RATIONALE_HISTORY_CONTRACT: &str = "open-why.rationale-history/v1";
 pub const COMMIT_LINKS_CONTRACT: &str = "open-why.commit-links/v1";
+pub const RATIONALE_IMPORT_CONTRACT: &str = "open-why.rationale-import/v1";
+pub const EVIDENCE_IDENTITY_CONTRACT: &str = "open-why.evidence-identity/v1";
+pub const SCOPED_CURRENT_EVIDENCE_CONTRACT: &str = "open-why.scoped-current-evidence/v1";
+pub const RECORD_DIGEST_CONTRACT: &str = "open-why.record-digest/v1";
+pub const STORE_SCHEMA_FAMILY: &str = "open-why";
+pub const STORE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_SUPERSESSION_CHAIN: usize = 64;
 pub const MAX_HISTORY_PAGE_RECORDS: usize = 3;
 pub const MAX_COMMIT_LINKS_PAGE_RECORDS: usize = 20;
@@ -76,6 +82,158 @@ pub struct GitRef {
     pub commit_subject: String,
 }
 
+/// Durable identity for one physical open-why store and its verified schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoreIdentity {
+    pub store_instance_id: String,
+    pub schema_family: &'static str,
+    pub schema_version: u32,
+    pub schema_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreCompatibilityErrorCode {
+    SchemaNewer,
+    PartialMigration,
+    ChecksumMismatch,
+    ShapeDrift,
+    SchemaCorrupt,
+    LiveWalIndeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreIdentityBindingErrorCode {
+    IdentityRequired,
+    InvalidIdentity,
+    IdentityMismatch,
+}
+
+/// Typed failure while binding a provider-owned identity to a store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreIdentityBindingError {
+    pub code: StoreIdentityBindingErrorCode,
+    pub message: &'static str,
+}
+
+impl std::fmt::Display for StoreIdentityBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = match self.code {
+            StoreIdentityBindingErrorCode::IdentityRequired => "identity_required",
+            StoreIdentityBindingErrorCode::InvalidIdentity => "invalid_identity",
+            StoreIdentityBindingErrorCode::IdentityMismatch => "identity_mismatch",
+        };
+        write!(f, "{code}: {}", self.message)
+    }
+}
+
+impl std::error::Error for StoreIdentityBindingError {}
+
+/// Read-only compatibility result for a database path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StoreCompatibility {
+    Missing,
+    Uninitialized,
+    MigrationRequired {
+        from: u32,
+        to: u32,
+        plan_digest: String,
+    },
+    Compatible {
+        identity: StoreIdentity,
+    },
+    Incompatible {
+        code: StoreCompatibilityErrorCode,
+        message: String,
+        found_version: Option<u32>,
+    },
+}
+
+/// Collision-resistant identity for one immutable rationale envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceIdentity {
+    pub contract: &'static str,
+    pub record_digest_contract: &'static str,
+    pub store_instance_id: String,
+    pub scope: String,
+    pub record_id: String,
+    pub record_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceIdentityErrorCode {
+    NotFound,
+    IdentityConflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EvidenceIdentityResolution {
+    Ok {
+        identity: EvidenceIdentity,
+    },
+    Error {
+        contract: &'static str,
+        code: EvidenceIdentityErrorCode,
+        message: String,
+        retryable: bool,
+    },
+}
+
+/// Typed error returned when a write tries to change a sealed record envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordIdentityConflict;
+
+impl std::fmt::Display for RecordIdentityConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("identity_conflict: immutable record evidence does not match its sealed digest")
+    }
+}
+
+impl std::error::Error for RecordIdentityConflict {}
+
+/// Typed error returned when a predecessor already names another successor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupersessionConflict;
+
+impl std::fmt::Display for SupersessionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("supersession_conflict: predecessor already names a different successor")
+    }
+}
+
+impl std::error::Error for SupersessionConflict {}
+
+/// Typed error returned when a requested predecessor does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupersessionTargetNotFound;
+
+impl std::fmt::Display for SupersessionTargetNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("supersession_target_not_found: predecessor was not found")
+    }
+}
+
+impl std::error::Error for SupersessionTargetNotFound {}
+
+/// Typed error returned when a requested predecessor relation would create a cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupersessionCycle;
+
+impl std::fmt::Display for SupersessionCycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("supersession_cycle: requested relation would create a cycle")
+    }
+}
+
+impl std::error::Error for SupersessionCycle {}
+
+/// Shared UTF-8 byte limit for canonical temporal values.
+pub const MAX_TEMPORAL_VALUE_BYTES: usize = 128;
+
 /// One evidence-bound read of the current record reached from a stable record ID.
 ///
 /// `requested_id` may name a superseded record. `record` is always the current,
@@ -93,6 +251,23 @@ pub enum CurrentRecordErrorCode {
     TraversalLimit,
     InvalidTemporalData,
 }
+
+impl std::fmt::Display for CurrentRecordErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = match self {
+            Self::NotFound => "not_found",
+            Self::NotYetValid => "not_yet_valid",
+            Self::ExpiredWithoutSuccessor => "expired_without_successor",
+            Self::BrokenChain => "broken_chain",
+            Self::Cycle => "cycle",
+            Self::TraversalLimit => "traversal_limit",
+            Self::InvalidTemporalData => "invalid_temporal_data",
+        };
+        f.write_str(code)
+    }
+}
+
+impl std::error::Error for CurrentRecordErrorCode {}
 
 /// Exact-ID resolution is an explicit contract rather than `Option<Record>` so a
 /// caller can distinguish absence from damaged or no-longer-current history.
@@ -116,6 +291,45 @@ pub enum CurrentRecordResolution {
         message: String,
         retryable: bool,
     },
+}
+
+/// Scoped exact-current read with the current record's verified identity.
+///
+/// This is a library contract. The existing MCP result remains unchanged.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ScopedCurrentRecordResolution {
+    Ok {
+        contract: &'static str,
+        as_of: String,
+        requested_id: String,
+        current_id: String,
+        record: Box<Record>,
+        git_refs: Vec<GitRef>,
+        supersession_chain: Vec<String>,
+        evidence_identity: EvidenceIdentity,
+    },
+    Error {
+        contract: &'static str,
+        as_of: String,
+        requested_id: String,
+        code: ScopedCurrentEvidenceErrorCode,
+        message: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopedCurrentEvidenceErrorCode {
+    NotFound,
+    NotYetValid,
+    ExpiredWithoutSuccessor,
+    BrokenChain,
+    Cycle,
+    TraversalLimit,
+    InvalidTemporalData,
+    IdentityConflict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

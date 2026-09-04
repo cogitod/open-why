@@ -26,6 +26,32 @@ retired records.
 identities their write paths define. Git links are stored separately, so one record
 can carry multiple commit references.
 
+Each database also has a bounded, provider-minted `store_instance_id`. Initial
+binding requires that explicit identity inside the immediate migration transaction;
+later explicit mismatches fail with a typed error. A copied database keeps its
+identity, while independently created databases receive different identities.
+The schema identity combines a family, version, build-known SHA-256 shape digest,
+and an append-only migration ledger whose checksums cover immutable executable SQL
+payloads. Schema changes, metadata, ledger entries, record-digest backfill, and
+`user_version` commit in one transaction. Only enumerated legacy shapes migrate.
+
+`inspect_store` checks this identity through a read-only SQLite connection. It does
+not create or migrate a database, create journal sidecars, or repair drift. A live
+or indeterminate WAL state also fails closed so inspection cannot silently ignore
+committed WAL content. Newer, partial, checksum-mismatched, corrupt, and
+shape-drifted stores fail closed.
+
+`open-why.record-digest/v1` seals the immutable record envelope with a versioned,
+length-prefixed SHA-256 encoding. It covers scope, record ID, rationale fields,
+observation time, tags, fact key, declared validity, and commit SHA. It excludes Git links,
+supersession state, embeddings, ranking projections, feedback, and retrieval
+counters. `Store::import_external` and `Store::import_external_sealed` provide
+strict replay for library hosts and the CLI. An exact replay creates zero records;
+changing a sealed field for the same store, scope, and record ID returns
+`identity_conflict` before any record or relation effect. Database guards also
+reject updates, deletion, and replacement of sealed records. The MCP import surface
+publishes these success and conflict outcomes as `open-why.rationale-import/v1`.
+
 ## Retrieval
 
 Search combines two ranked candidate sets:
@@ -52,6 +78,15 @@ records.
 Library consumers can call `Store::get_current_evidence` with a stable record ID.
 The method follows supersession to the active record and returns that record's Git
 references plus the traversed chain.
+
+Untrusted library hosts use `Store::get_current_evidence_in_scope`. It applies exact
+scope authority during traversal, samples the Store production clock for each call,
+and returns `open-why.scoped-current-evidence/v1`. That contract has its own typed
+error enum and carries the current record's verified
+`open-why.evidence-identity/v1` identity from the same read snapshot. Missing and
+wrong-scope roots are indistinguishable; an unavailable foreign successor returns a
+metadata-free broken-chain result. The MCP `open-why.current-rationale/v1` contract
+and its outcome enum remain unchanged.
 
 MCP consumers can perform the inverse lookup with `open-why_commit_links`. An exact
 stored commit hash and explicit scope return bounded, directly linked historical

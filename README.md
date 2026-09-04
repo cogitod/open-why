@@ -152,13 +152,55 @@ fn main() -> anyhow::Result<()> {
 ```
 
 `Store::open_default` uses the configured embedder and default database path.
-`Store::open` takes a database path and uses lexical search only.
+Set `OPEN_WHY_STORE_INSTANCE_ID` when that path may need its first binding or a
+migration. `Store::open` reopens an already-bound database with lexical search;
+new databases use `Store::open_with_store_instance_id` and an explicit identity
+minted by the host.
+
+Library hosts can inspect a database before opening it:
+
+```rust
+use open_why::{inspect_store, Store, StoreCompatibility};
+use std::path::Path;
+
+let path = Path::new("/path/to/open-why.db");
+match inspect_store(path)? {
+    StoreCompatibility::Compatible { identity } => {
+        println!("store {}", identity.store_instance_id);
+    }
+    StoreCompatibility::MigrationRequired { .. } => {
+        let store = Store::open_with_store_instance_id(path, "my-host:primary")?;
+        println!("store {}", store.store_identity()?.store_instance_id);
+    }
+    state => println!("store is not ready: {state:?}"),
+}
+# Ok::<(), anyhow::Error>(())
+```
+
+`inspect_store` is read-only: it does not create a path, migrate a schema, or
+write SQLite sidecars. A live or indeterminate WAL state fails closed instead of
+reporting a potentially stale main-file view. Initial binding requires a
+provider-minted identity of 1 to 128 ASCII letters, digits, `.`, `_`, `:`, or `-`;
+a later explicit mismatch fails with a typed identity error.
+
+`Store::get_current_evidence_in_scope` resolves Current at the Store clock in one
+snapshot and returns `open-why.scoped-current-evidence/v1`, including a verified
+sealed evidence identity. Git links, supersession state, feedback, and retrieval
+counters do not change that identity. `Store::import_external` and its compatibility
+alias `Store::import_external_sealed` accept exact replays, report only newly created
+records, and reject a changed immutable envelope with `RecordIdentityConflict`
+before record or relation effects. `open-why_import` exposes the same result as
+`open-why.rationale-import/v1`. Existing MCP Current v1 outcomes remain unchanged.
+Canonical temporal values use ASCII `YYYY-MM-DDTHH:MM:SS[.digits]Z`. Their shared
+128-byte limit is measured over UTF-8 at runtime and generated from the same public
+constant in MCP catalog schemas.
 
 ## Configuration
 
 | Variable | Effect |
 | --- | --- |
 | `OPEN_WHY_DB=/path/to/open-why.db` | Use a specific SQLite database. |
+| `OPEN_WHY_STORE_INSTANCE_ID=my-host:primary` | Bind a new or migrating database to a provider-minted identity. |
 | `OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2` | Use a local embedding model. |
 | `OPEN_WHY_AUTO_FETCH=1` | Download the local model on first use if the cache is empty. |
 | `OPEN_WHY_EMBED_URL=https://example.invalid/embeddings` | Use an OpenAI-compatible embedding endpoint. |
