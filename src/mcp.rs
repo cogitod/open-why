@@ -1,10 +1,11 @@
 use crate::store::{
     self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
-    CurrentRecordResolution, ExternalDecision, RationaleHistoryErrorCode,
-    RationaleHistoryResolution, Record, RecordIdentityConflict, COMMIT_LINKS_CONTRACT,
-    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
-    MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT,
-    RATIONALE_IMPORT_CONTRACT,
+    CurrentRecordResolution, EvidenceIdentityResolution, ExternalDecision,
+    RationaleHistoryErrorCode, RationaleHistoryResolution, Record, RecordIdentityConflict,
+    ScopedCommitLinkErrorCode, ScopedCommitLinkResolution, COMMIT_LINKS_CONTRACT,
+    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINK_HASH_BYTES,
+    MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN,
+    MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT, RATIONALE_IMPORT_CONTRACT,
 };
 use crate::{db, miner};
 use anyhow::Result;
@@ -29,8 +30,6 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_IMPORT_ROWS: usize = 1000;
 const MAX_IMPORT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_GIT_REFS: usize = 100;
-const MAX_GIT_HASH_BYTES: usize = 128;
-const MAX_GIT_SUBJECT_BYTES: usize = 4 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,13 +113,17 @@ struct ToolError {
 
 impl ToolError {
     fn new(code: &str, message: impl Into<String>) -> Self {
+        Self::with_retryable(code, message, false)
+    }
+
+    fn with_retryable(code: &str, message: impl Into<String>, retryable: bool) -> Self {
         Self {
             payload: json!({
                 "contract": MCP_ERROR_CONTRACT,
                 "status": "error",
                 "code": code,
                 "message": message.into(),
-                "retryable": false
+                "retryable": retryable
             }),
         }
     }
@@ -168,8 +171,8 @@ fn import_row_schema() -> Value {
             "fact_key":{"type":["string","null"],"maxLength":MAX_ID_BYTES},
             "git_refs":{"type":"array","maxItems":MAX_GIT_REFS,"items":object_schema(
                 json!({
-                    "commit_hash":{"type":"string","maxLength":MAX_GIT_HASH_BYTES},
-                    "commit_subject":{"type":"string","maxLength":MAX_GIT_SUBJECT_BYTES}
+                    "commit_hash":{"type":"string","maxLength":MAX_COMMIT_LINK_HASH_BYTES},
+                    "commit_subject":{"type":"string","maxLength":MAX_COMMIT_LINK_SUBJECT_BYTES}
                 }),
                 &["commit_hash", "commit_subject"]
             )}
@@ -241,7 +244,7 @@ fn input_schema(kind: ToolKind) -> Value {
         ToolKind::CommitLinks => object_schema(
             json!({
                 "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
-                "commit":{"type":"string","maxLength":MAX_GIT_HASH_BYTES},
+                "commit":{"type":"string","maxLength":MAX_COMMIT_LINK_HASH_BYTES},
                 "limit":{"type":"integer","minimum":1,"maximum":MAX_COMMIT_LINKS_PAGE_RECORDS},
                 "cursor":{"type":"string","maxLength":MAX_ID_BYTES}
             }),
@@ -249,9 +252,9 @@ fn input_schema(kind: ToolKind) -> Value {
         ),
         ToolKind::Link => object_schema(
             json!({
-                "commit":{"type":"string","maxLength":MAX_GIT_HASH_BYTES},
+                "commit":{"type":"string","maxLength":MAX_COMMIT_LINK_HASH_BYTES},
                 "decision":{"type":"string","maxLength":MAX_ID_BYTES},
-                "subject":{"type":"string","maxLength":MAX_GIT_SUBJECT_BYTES},
+                "subject":{"type":"string","maxLength":MAX_COMMIT_LINK_SUBJECT_BYTES},
                 "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES}
             }),
             &["commit", "decision", "scope"],
@@ -840,8 +843,8 @@ fn validate_import_row(
         ));
     }
     for git_ref in &row.git_refs {
-        if git_ref.commit_hash.len() > MAX_GIT_HASH_BYTES
-            || git_ref.commit_subject.len() > MAX_GIT_SUBJECT_BYTES
+        if git_ref.commit_hash.len() > MAX_COMMIT_LINK_HASH_BYTES
+            || git_ref.commit_subject.len() > MAX_COMMIT_LINK_SUBJECT_BYTES
         {
             return Err(ToolError::new(
                 "limit_exceeded",
@@ -1103,7 +1106,7 @@ fn history_tool(store: &db::Store, args: &Value, as_of: i64) -> ToolResult {
 
 fn commit_links_tool(store: &db::Store, args: &Value) -> ToolResult {
     let scope = required_exact_non_blank_string(args, "scope", MAX_AUTHORITY_BYTES)?;
-    let commit = required_exact_non_blank_string(args, "commit", MAX_GIT_HASH_BYTES)?;
+    let commit = required_exact_non_blank_string(args, "commit", MAX_COMMIT_LINK_HASH_BYTES)?;
     let cursor = match optional_string(args, "cursor", MAX_ID_BYTES)? {
         Some(cursor) if cursor.trim().is_empty() => {
             return Err(ToolError::new(
@@ -1158,21 +1161,50 @@ fn commit_links_tool(store: &db::Store, args: &Value) -> ToolResult {
 fn link_tool(store: &db::Store, args: &Value) -> ToolResult {
     let scope = explicit_scope(args)?;
     let decision = required_string(args, "decision", MAX_ID_BYTES)?;
-    let commit = required_string(args, "commit", MAX_GIT_HASH_BYTES)?;
-    let subject = optional_string(args, "subject", MAX_GIT_SUBJECT_BYTES)?.unwrap_or("");
-    if !store
-        .record_belongs_to_scope(decision, scope)
-        .map_err(ToolError::internal)?
-    {
-        return Err(ToolError::new(
-            "not_found",
-            format!("record `{decision}` was not found in scope `{scope}`"),
-        ));
+    let commit = required_string(args, "commit", MAX_COMMIT_LINK_HASH_BYTES)?;
+    let subject = optional_string(args, "subject", MAX_COMMIT_LINK_SUBJECT_BYTES)?.unwrap_or("");
+    let identity = match store.evidence_identity_in_scope(decision, scope) {
+        Ok(EvidenceIdentityResolution::Ok { identity }) => identity,
+        Ok(EvidenceIdentityResolution::Error { .. }) => {
+            return Err(ToolError::new(
+                "not_found",
+                "record is unavailable in the requested scope",
+            ));
+        }
+        Err(error) => {
+            return Err(ToolError::with_retryable(
+                "store_unavailable",
+                "commit link store is unavailable",
+                db::store_error_is_retryable(&error),
+            ));
+        }
+    };
+    match store.link_git_in_scope(&identity, commit, subject) {
+        ScopedCommitLinkResolution::Ok { .. } => {
+            Ok(json!({"status":"ok","scope":scope,"decision":decision,"commit":commit}))
+        }
+        ScopedCommitLinkResolution::Error {
+            code, retryable, ..
+        } => match code {
+            ScopedCommitLinkErrorCode::InvalidRequest => Err(ToolError::new(
+                "invalid_arguments",
+                "commit link request is invalid",
+            )),
+            ScopedCommitLinkErrorCode::EvidenceUnavailable => Err(ToolError::new(
+                "not_found",
+                "record is unavailable in the requested scope",
+            )),
+            ScopedCommitLinkErrorCode::LinkConflict => Err(ToolError::new(
+                "link_conflict",
+                "commit link already exists with a different subject",
+            )),
+            ScopedCommitLinkErrorCode::StoreUnavailable => Err(ToolError::with_retryable(
+                "store_unavailable",
+                "commit link store is unavailable",
+                retryable,
+            )),
+        },
     }
-    store
-        .link_git(decision, commit, subject)
-        .map_err(ToolError::internal)?;
-    Ok(json!({"status":"ok","scope":scope,"decision":decision,"commit":commit}))
 }
 
 fn feedback_tool(store: &db::Store, args: &Value) -> ToolResult {
@@ -1830,7 +1862,7 @@ mod tests {
             fact_key: None,
             git_refs: vec![store::GitRef {
                 commit_hash: "exact-hash".to_owned(),
-                commit_subject: "s".repeat(MAX_GIT_SUBJECT_BYTES + 1),
+                commit_subject: "s".repeat(MAX_COMMIT_LINK_SUBJECT_BYTES + 1),
             }],
         };
         store.import_external(&[record]).unwrap();
@@ -1860,7 +1892,7 @@ mod tests {
         }
         for arguments in [
             json!({"scope":" ".repeat(MAX_AUTHORITY_BYTES + 1),"commit":"exact-hash"}),
-            json!({"scope":"scope-a","commit":" ".repeat(MAX_GIT_HASH_BYTES + 1)}),
+            json!({"scope":"scope-a","commit":" ".repeat(MAX_COMMIT_LINK_HASH_BYTES + 1)}),
             json!({"scope":"scope-a","commit":"exact-hash","cursor":" ".repeat(MAX_ID_BYTES + 1)}),
         ] {
             let error = dispatch_tool(&store, "open-why_commit_links", &arguments, 0).unwrap_err();
