@@ -1,17 +1,250 @@
 use crate::embed::Embedder;
 use crate::store::{
     CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
-    CurrentRecordResolution, Decision, ExternalDecision, GitRef, RationaleHistoryErrorCode,
-    RationaleHistoryRecord, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
-    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES,
+    CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,
+    EvidenceIdentityResolution, ExternalDecision, GitRef, RationaleHistoryErrorCode,
+    RationaleHistoryRecord, RationaleHistoryResolution, Record, RecordIdentityConflict,
+    ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution, StoreCompatibility,
+    StoreCompatibilityErrorCode, StoreIdentity, StoreIdentityBindingError,
+    StoreIdentityBindingErrorCode, SupersessionConflict, SupersessionCycle,
+    SupersessionTargetNotFound, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
+    EVIDENCE_IDENTITY_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES,
     MAX_COMMIT_LINK_RECORD_ID_BYTES, MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_GIT_REFS,
     MAX_HISTORY_PAGE_RECORDS, MAX_HISTORY_PAGE_SOURCE_BYTES, MAX_SUPERSESSION_CHAIN,
-    RATIONALE_HISTORY_CONTRACT,
+    MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT, RECORD_DIGEST_CONTRACT,
+    SCOPED_CURRENT_EVIDENCE_CONTRACT, STORE_SCHEMA_FAMILY, STORE_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+const CORE_SCHEMA_V1_SQL: &str = "CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    importance REAL NOT NULL DEFAULT 0.5,
+    source TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT 'global',
+    superseded_by TEXT,
+    valid_from TEXT,
+    valid_until TEXT,
+    fact_key TEXT,
+    embedding TEXT,
+    content_digest TEXT NOT NULL,
+    source_identity TEXT NOT NULL,
+    created_epoch INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    accessed_count INTEGER NOT NULL DEFAULT 0,
+    times_injected INTEGER NOT NULL DEFAULT 0,
+    effectiveness REAL NOT NULL DEFAULT 0.5,
+    tags TEXT,
+    times_helpful INTEGER NOT NULL DEFAULT 0,
+    declared_valid_until TEXT,
+    record_digest_v1 TEXT
+ );
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_identity
+   ON decisions(source_identity, content_digest);
+ CREATE INDEX IF NOT EXISTS idx_decisions_scope ON decisions(scope);
+ CREATE TABLE IF NOT EXISTS decision_git_refs (
+    decision_id TEXT NOT NULL,
+    commit_hash TEXT NOT NULL,
+    commit_subject TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (decision_id, commit_hash)
+ );
+ CREATE INDEX IF NOT EXISTS idx_decision_git_refs_commit_hash_decision
+   ON decision_git_refs(commit_hash, decision_id);";
+
+const FEEDBACK_SCHEMA_V1_SQL: &str = "CREATE TABLE IF NOT EXISTS feedback_log (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    helpful INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+ );
+ CREATE INDEX IF NOT EXISTS idx_feedback_log_memory ON feedback_log(memory_id);";
+
+const FTS_SCHEMA_V1_SQL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+    scope, title, content, tags,
+    content=decisions, content_rowid=rowid
+ );";
+
+const FTS_TRIGGERS_V1_SQL: &str = "CREATE TRIGGER IF NOT EXISTS decisions_fts_ai
+ AFTER INSERT ON decisions BEGIN
+   INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+   VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+ END;
+ CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
+   INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+   VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+ END;
+ CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
+   INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+   VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+   INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+   VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+ END;";
+
+const IDENTITY_SCHEMA_V1_SQL: &str = "CREATE TABLE IF NOT EXISTS open_why_migrations (
+    sequence INTEGER PRIMARY KEY,
+    migration_id TEXT NOT NULL UNIQUE,
+    checksum_sha256 TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+ );
+ CREATE TABLE IF NOT EXISTS open_why_metadata (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    schema_family TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    schema_sha256 TEXT NOT NULL,
+    migration_plan_digest TEXT NOT NULL,
+    store_instance_id TEXT NOT NULL UNIQUE
+ );";
+
+const IDENTITY_TRIGGERS_V1_SQL: &str =
+    "CREATE TRIGGER IF NOT EXISTS decisions_identity_insert_guard
+ BEFORE INSERT ON decisions
+ WHEN EXISTS(SELECT 1 FROM decisions WHERE id=NEW.id)
+   OR NEW.record_digest_v1 IS NULL
+   OR length(NEW.record_digest_v1) != 64
+   OR NEW.record_digest_v1 GLOB '*[^0-9a-f]*'
+ BEGIN
+   SELECT RAISE(ABORT, 'identity_conflict');
+ END;
+ CREATE TRIGGER IF NOT EXISTS decisions_identity_update_guard
+ BEFORE UPDATE OF id,scope,kind,title,content,importance,source,author,commit_sha,date,tags,
+                  fact_key,valid_from,declared_valid_until,record_digest_v1
+ ON decisions
+ WHEN NEW.id IS NOT OLD.id
+   OR NEW.scope IS NOT OLD.scope
+   OR NEW.kind IS NOT OLD.kind
+   OR NEW.title IS NOT OLD.title
+   OR NEW.content IS NOT OLD.content
+   OR NEW.importance IS NOT OLD.importance
+   OR NEW.source IS NOT OLD.source
+   OR NEW.author IS NOT OLD.author
+   OR NEW.commit_sha IS NOT OLD.commit_sha
+   OR NEW.date IS NOT OLD.date
+   OR NEW.tags IS NOT OLD.tags
+   OR NEW.fact_key IS NOT OLD.fact_key
+   OR NEW.valid_from IS NOT OLD.valid_from
+   OR NEW.declared_valid_until IS NOT OLD.declared_valid_until
+   OR NEW.record_digest_v1 IS NOT OLD.record_digest_v1
+ BEGIN
+   SELECT RAISE(ABORT, 'identity_conflict');
+ END;
+ CREATE TRIGGER IF NOT EXISTS decisions_identity_delete_guard
+ BEFORE DELETE ON decisions BEGIN
+   SELECT RAISE(ABORT, 'identity_conflict');
+ END;";
+
+const LEGACY_SCHEMA_V0_SQL: &str = "CREATE TABLE decisions (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+    importance REAL NOT NULL DEFAULT 0.5, source TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '', commit_sha TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT 'global', superseded_by TEXT,
+    valid_from TEXT, valid_until TEXT, fact_key TEXT, embedding TEXT,
+    content_digest TEXT NOT NULL, source_identity TEXT NOT NULL,
+    created_epoch INTEGER NOT NULL DEFAULT 0, updated_at TEXT,
+    accessed_count INTEGER NOT NULL DEFAULT 0, times_injected INTEGER NOT NULL DEFAULT 0,
+    effectiveness REAL NOT NULL DEFAULT 0.5, tags TEXT,
+    times_helpful INTEGER NOT NULL DEFAULT 0
+ );
+ CREATE UNIQUE INDEX idx_decisions_identity ON decisions(source_identity, content_digest);
+ CREATE INDEX idx_decisions_scope ON decisions(scope);
+ CREATE TABLE decision_git_refs (
+    decision_id TEXT NOT NULL, commit_hash TEXT NOT NULL, commit_subject TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (decision_id, commit_hash)
+ );
+ CREATE INDEX idx_decision_git_refs_commit_hash_decision
+   ON decision_git_refs(commit_hash, decision_id);
+ CREATE TABLE feedback_log (
+    id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, helpful INTEGER NOT NULL,
+    delta REAL NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+ );
+ CREATE INDEX idx_feedback_log_memory ON feedback_log(memory_id);
+ CREATE VIRTUAL TABLE decisions_fts USING fts5(
+    scope, title, content, tags, content=decisions, content_rowid=rowid
+ );
+ CREATE TRIGGER decisions_fts_ai AFTER INSERT ON decisions BEGIN
+   INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+   VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+ END;
+ CREATE TRIGGER decisions_fts_ad AFTER DELETE ON decisions BEGIN
+   INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+   VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+ END;
+ CREATE TRIGGER decisions_fts_au AFTER UPDATE ON decisions BEGIN
+   INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
+   VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
+   INSERT INTO decisions_fts(rowid, scope, title, content, tags)
+   VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
+ END;";
+
+const MIGRATION_STEPS: &[(&str, &str)] = &[
+    ("0001-core-store", CORE_SCHEMA_V1_SQL),
+    ("0002-feedback", FEEDBACK_SCHEMA_V1_SQL),
+    ("0003-search", FTS_SCHEMA_V1_SQL),
+    ("0004-search-triggers", FTS_TRIGGERS_V1_SQL),
+    ("0005-identity-foundation", IDENTITY_SCHEMA_V1_SQL),
+    ("0006-identity-guards", IDENTITY_TRIGGERS_V1_SQL),
+];
+
+const REQUIRED_DECISION_COLUMNS: &[&str] = &[
+    "accessed_count",
+    "author",
+    "commit_sha",
+    "content",
+    "content_digest",
+    "created_epoch",
+    "date",
+    "declared_valid_until",
+    "effectiveness",
+    "embedding",
+    "fact_key",
+    "id",
+    "importance",
+    "kind",
+    "record_digest_v1",
+    "scope",
+    "source",
+    "source_identity",
+    "superseded_by",
+    "tags",
+    "times_helpful",
+    "times_injected",
+    "title",
+    "updated_at",
+    "valid_from",
+    "valid_until",
+];
+
+const REQUIRED_OBJECTS: &[(&str, &str)] = &[
+    ("table", "decisions"),
+    ("table", "decision_git_refs"),
+    ("table", "feedback_log"),
+    ("table", "open_why_metadata"),
+    ("table", "open_why_migrations"),
+    ("table", "decisions_fts"),
+    ("index", "idx_decisions_identity"),
+    ("index", "idx_decisions_scope"),
+    ("index", "idx_decision_git_refs_commit_hash_decision"),
+    ("index", "idx_feedback_log_memory"),
+    ("trigger", "decisions_fts_ai"),
+    ("trigger", "decisions_fts_ad"),
+    ("trigger", "decisions_fts_au"),
+    ("trigger", "decisions_identity_insert_guard"),
+    ("trigger", "decisions_identity_update_guard"),
+    ("trigger", "decisions_identity_delete_guard"),
+];
 
 pub fn default_path() -> PathBuf {
     std::env::var("OPEN_WHY_DB")
@@ -40,6 +273,30 @@ struct CurrentNode {
     valid_until: Option<String>,
 }
 
+struct CurrentEvidenceRead {
+    resolution: CurrentRecordResolution,
+    identity: Option<EvidenceIdentity>,
+}
+
+#[derive(Clone)]
+struct RecordDigestRow {
+    id: String,
+    scope: String,
+    kind: String,
+    title: String,
+    content: String,
+    importance: f64,
+    source: String,
+    author: String,
+    commit_sha: String,
+    date: String,
+    tags: Option<String>,
+    fact_key: Option<String>,
+    valid_from: Option<String>,
+    declared_valid_until: Option<String>,
+    sealed_digest: Option<String>,
+}
+
 struct HistoryPageRequest<'a> {
     id: &'a str,
     scope: &'a str,
@@ -49,28 +306,102 @@ struct HistoryPageRequest<'a> {
     chain_cap: usize,
 }
 
+struct ExternalCaptureRequest<'a> {
+    decision: &'a Decision,
+    scope: &'a str,
+    id: &'a str,
+    valid_from: Option<&'a str>,
+    fact_key: Option<&'a str>,
+    supersedes: Option<&'a str>,
+}
+
+/// Inspect an existing store without creating or migrating any filesystem or
+/// database state.
+pub fn inspect_store(path: &Path) -> Result<StoreCompatibility> {
+    if !path.exists() {
+        return Ok(StoreCompatibility::Missing);
+    }
+    if store_may_have_live_wal(path)? {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::LiveWalIndeterminate,
+            "store may have committed state in a live WAL and cannot be inspected without side effects",
+            None,
+        ));
+    }
+    let uri = immutable_sqlite_uri(path);
+    let conn = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .with_context(|| format!("inspect {}", path.display()))?;
+    conn.pragma_update(None, "query_only", true)?;
+    let tx = conn.unchecked_transaction()?;
+    let compatibility = inspect_connection(&tx);
+    tx.rollback()?;
+    if store_may_have_live_wal(path)? {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::LiveWalIndeterminate,
+            "store entered WAL mode during read-only inspection",
+            None,
+        ));
+    }
+    Ok(compatibility)
+}
+
 impl Store {
     /// Open a store without an embedder (lexical-first). Kept as the explicit no-embedder entry
     /// point; every command path uses `open_default` so the semantic arm is active uniformly.
     #[allow(dead_code)]
     pub fn open(path: &Path) -> Result<Store> {
-        Self::open_with_embedder(path, None)
+        Self::open_with_embedder_and_identity(path, None, None)
+    }
+
+    /// Open or migrate a store with an explicit provider-owned identity. The
+    /// identity is required for first binding and must match on later bound opens.
+    pub fn open_with_store_instance_id(path: &Path, store_instance_id: &str) -> Result<Store> {
+        Self::open_with_embedder_and_identity(path, None, Some(store_instance_id))
     }
 
     /// Open the default store, wiring an embedder from the environment when one is configured
     /// (`OPEN_WHY_EMBED_MODEL_PATH` or `OPEN_WHY_EMBED_URL`). This is the entry point every CLI
     /// command and the MCP server use, so the semantic arm is active uniformly.
     pub fn open_default() -> Result<Store> {
-        Self::open_with_embedder(&default_path(), crate::embed::from_env()?)
+        let store_instance_id = std::env::var("OPEN_WHY_STORE_INSTANCE_ID").ok();
+        Self::open_with_embedder_and_identity(
+            &default_path(),
+            crate::embed::from_env()?,
+            store_instance_id.as_deref(),
+        )
     }
 
     pub fn open_with_embedder(path: &Path, embedder: Option<Box<dyn Embedder>>) -> Result<Store> {
+        Self::open_with_embedder_and_identity(path, embedder, None)
+    }
+
+    pub fn open_with_embedder_and_store_instance_id(
+        path: &Path,
+        embedder: Option<Box<dyn Embedder>>,
+        store_instance_id: &str,
+    ) -> Result<Store> {
+        Self::open_with_embedder_and_identity(path, embedder, Some(store_instance_id))
+    }
+
+    fn open_with_embedder_and_identity(
+        path: &Path,
+        embedder: Option<Box<dyn Embedder>>,
+        store_instance_id: Option<&str>,
+    ) -> Result<Store> {
+        if !path.exists() {
+            require_store_instance_id(store_instance_id)?;
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         let store = Store { conn, embedder };
-        store.migrate()?;
+        store.migrate_with_provider_identity(store_instance_id)?;
         Ok(store)
     }
 
@@ -102,61 +433,157 @@ impl Store {
         self.embedder.as_ref()?.embed(query).ok()
     }
 
-    fn migrate(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS decisions (
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                importance REAL NOT NULL DEFAULT 0.5,
-                source TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                commit_sha TEXT NOT NULL DEFAULT '',
-                date TEXT NOT NULL DEFAULT '',
-                scope TEXT NOT NULL DEFAULT 'global',
-                superseded_by TEXT,
-                valid_from TEXT,
-                valid_until TEXT,
-                fact_key TEXT,
-                embedding TEXT,
-                content_digest TEXT NOT NULL,
-                source_identity TEXT NOT NULL,
-                created_epoch INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_identity
-               ON decisions(source_identity, content_digest);
-             CREATE INDEX IF NOT EXISTS idx_decisions_scope ON decisions(scope);
-             CREATE TABLE IF NOT EXISTS decision_git_refs (
-                decision_id TEXT NOT NULL,
-                commit_hash TEXT NOT NULL,
-                commit_subject TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (decision_id, commit_hash)
-             );
-             CREATE INDEX IF NOT EXISTS idx_decision_git_refs_commit_hash_decision
-               ON decision_git_refs(commit_hash, decision_id);",
+    fn migrate_with_provider_identity(&self, store_instance_id: Option<&str>) -> Result<()> {
+        self.migrate_with_hook(store_instance_id, |_| Ok(()))
+    }
+
+    fn migrate_with_hook(
+        &self,
+        store_instance_id: Option<&str>,
+        before_commit: impl FnOnce(&Connection) -> Result<()>,
+    ) -> Result<()> {
+        match inspect_connection(&self.conn) {
+            StoreCompatibility::Compatible { identity } => {
+                return verify_store_binding(&identity, store_instance_id)
+            }
+            StoreCompatibility::Missing => anyhow::bail!("store path disappeared during migration"),
+            StoreCompatibility::Uninitialized | StoreCompatibility::MigrationRequired { .. } => {}
+            StoreCompatibility::Incompatible { code, message, .. } => {
+                anyhow::bail!("store compatibility {code:?}: {message}")
+            }
+        }
+
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let migration_required = match inspect_connection(&tx) {
+            StoreCompatibility::Compatible { identity } => {
+                verify_store_binding(&identity, store_instance_id)?;
+                tx.rollback()?;
+                return Ok(());
+            }
+            StoreCompatibility::Uninitialized => false,
+            StoreCompatibility::MigrationRequired { .. } => true,
+            StoreCompatibility::Missing => {
+                anyhow::bail!("store path disappeared during migration")
+            }
+            StoreCompatibility::Incompatible { code, message, .. } => {
+                anyhow::bail!("store compatibility {code:?}: {message}")
+            }
+        };
+        let store_instance_id = require_store_instance_id(store_instance_id)?;
+        if migration_required {
+            Self::rebuild_legacy_v0_on(&tx)?;
+        }
+        Self::create_core_schema_on(&tx)?;
+        Self::create_feedback_schema_on(&tx)?;
+        Self::ensure_fts_on(&tx)?;
+        Self::create_identity_schema_on(&tx)?;
+
+        tx.execute(
+            "UPDATE decisions
+             SET declared_valid_until=valid_until
+             WHERE declared_valid_until IS NULL AND valid_until IS NOT NULL",
+            [],
         )?;
-        self.ensure_column("valid_from", "TEXT")?;
-        self.ensure_column("fact_key", "TEXT")?;
-        self.ensure_column("embedding", "TEXT")?;
-        self.ensure_column("updated_at", "TEXT")?;
-        self.ensure_column("accessed_count", "INTEGER NOT NULL DEFAULT 0")?;
-        self.ensure_column("times_injected", "INTEGER NOT NULL DEFAULT 0")?;
-        self.ensure_column("effectiveness", "REAL NOT NULL DEFAULT 0.5")?;
-        self.ensure_column("tags", "TEXT")?;
-        self.ensure_column("times_helpful", "INTEGER NOT NULL DEFAULT 0")?;
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS feedback_log (
-                id TEXT PRIMARY KEY,
-                memory_id TEXT NOT NULL,
-                helpful INTEGER NOT NULL,
-                delta REAL NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-             );
-             CREATE INDEX IF NOT EXISTS idx_feedback_log_memory ON feedback_log(memory_id);",
+        Self::backfill_record_digests_on(&tx)?;
+        Self::ensure_identity_triggers_on(&tx)?;
+
+        Self::append_migration_ledger_on(&tx)?;
+        let schema_sha256 = expected_schema_sha256_v1()?;
+        anyhow::ensure!(
+            schema_sha256_on(&tx)? == schema_sha256,
+            "migrated store schema differs from the build-known v1 schema"
+        );
+        tx.execute(
+            "INSERT INTO open_why_metadata
+               (singleton,schema_family,schema_version,schema_sha256,migration_plan_digest,store_instance_id)
+             VALUES (1,?1,?2,?3,?4,?5)",
+            params![
+                STORE_SCHEMA_FAMILY,
+                STORE_SCHEMA_VERSION,
+                schema_sha256,
+                migration_plan_digest(),
+                store_instance_id
+            ],
         )?;
-        self.ensure_fts()?;
+        tx.pragma_update(None, "user_version", STORE_SCHEMA_VERSION)?;
+        before_commit(&tx)?;
+
+        match inspect_connection(&tx) {
+            StoreCompatibility::Compatible { .. } => {}
+            other => anyhow::bail!("migrated store failed validation: {other:?}"),
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn rebuild_legacy_v0_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS decisions_fts_ai;
+             DROP TRIGGER IF EXISTS decisions_fts_ad;
+             DROP TRIGGER IF EXISTS decisions_fts_au;
+             DROP TABLE IF EXISTS decisions_fts;
+             ALTER TABLE decisions RENAME TO decisions_v0;
+             DROP INDEX idx_decisions_identity;
+             DROP INDEX idx_decisions_scope;",
+        )?;
+        Self::create_core_schema_on(conn)?;
+        conn.execute_batch(
+            "INSERT INTO decisions (
+                rowid,id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                superseded_by,valid_from,valid_until,fact_key,embedding,content_digest,
+                source_identity,created_epoch,updated_at,accessed_count,times_injected,
+                effectiveness,tags,times_helpful,declared_valid_until,record_digest_v1
+             )
+             SELECT rowid,id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                superseded_by,valid_from,valid_until,fact_key,embedding,content_digest,
+                source_identity,created_epoch,updated_at,accessed_count,times_injected,
+                effectiveness,tags,times_helpful,valid_until,NULL
+             FROM decisions_v0;
+             DROP TABLE decisions_v0;",
+        )?;
+        Ok(())
+    }
+
+    fn append_migration_ledger_on(conn: &Connection) -> Result<()> {
+        for (index, (migration_id, payload)) in MIGRATION_STEPS.iter().enumerate() {
+            let sequence = i64::try_from(index + 1)?;
+            let checksum = sha256_hex(payload.as_bytes());
+            let existing: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT migration_id,checksum_sha256 FROM open_why_migrations
+                     WHERE sequence=?1",
+                    params![sequence],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            match existing {
+                Some((id, found)) if id == *migration_id && found == checksum => {}
+                Some(_) => anyhow::bail!("migration ledger conflicts at sequence {sequence}"),
+                None => {
+                    conn.execute(
+                        "INSERT INTO open_why_migrations
+                           (sequence,migration_id,checksum_sha256,applied_at)
+                         VALUES (?1,?2,?3,datetime('now'))",
+                        params![sequence, migration_id, checksum],
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn create_core_schema_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(CORE_SCHEMA_V1_SQL)?;
+        Ok(())
+    }
+
+    fn create_feedback_schema_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(FEEDBACK_SCHEMA_V1_SQL)?;
+        Ok(())
+    }
+
+    fn create_identity_schema_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(IDENTITY_SCHEMA_V1_SQL)?;
         Ok(())
     }
 
@@ -164,34 +591,22 @@ impl Store {
     /// `tags` columns, synchronized by triggers,
     /// ranked by `bm25(decisions_fts, 0, 10, 5, 1)`: scope weight 0, title 10, content 5,
     /// tags 1. This makes the lexical arm byte-for-byte the same engine the TS side calls.
-    fn ensure_fts(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
-               scope, title, content, tags,
-               content=decisions, content_rowid=rowid
-             );",
-        )?;
-        self.ensure_fts_triggers()?;
+    fn ensure_fts_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(FTS_SCHEMA_V1_SQL)?;
+        Self::ensure_fts_triggers_on(conn)?;
         // Backfill stores created before the FTS index existed. Detect it by the inverted
         // index being empty while the content table has rows. The FTS5 external-content
         // `'rebuild'` command is unreliable against a TEXT-primary-key content table, so
         // backfill with the same explicit insert shape the triggers use.
         let idx_count: i64 =
-            self.conn
-                .query_row("SELECT count(*) FROM decisions_fts_idx", [], |r| r.get(0))?;
+            conn.query_row("SELECT count(*) FROM decisions_fts_idx", [], |r| r.get(0))?;
         let content_count: i64 =
-            self.conn
-                .query_row("SELECT count(*) FROM decisions", [], |r| r.get(0))?;
+            conn.query_row("SELECT count(*) FROM decisions", [], |r| r.get(0))?;
         if idx_count == 0 && content_count > 0 {
-            self.conn.execute_batch(
-                "DROP TABLE IF EXISTS decisions_fts;
-                 CREATE VIRTUAL TABLE decisions_fts USING fts5(
-                   scope, title, content, tags,
-                   content=decisions, content_rowid=rowid
-                 );",
-            )?;
-            self.ensure_fts_triggers()?;
-            self.conn.execute_batch(
+            conn.execute_batch("DROP TABLE IF EXISTS decisions_fts;")?;
+            conn.execute_batch(FTS_SCHEMA_V1_SQL)?;
+            Self::ensure_fts_triggers_on(conn)?;
+            conn.execute_batch(
                 "INSERT INTO decisions_fts(rowid, scope, title, content, tags)
                  SELECT rowid, scope, title, content, tags FROM decisions;",
             )?;
@@ -199,38 +614,138 @@ impl Store {
         Ok(())
     }
 
-    fn ensure_fts_triggers(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE TRIGGER IF NOT EXISTS decisions_fts_ai AFTER INSERT ON decisions BEGIN
-               INSERT INTO decisions_fts(rowid, scope, title, content, tags)
-               VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
-             END;
-             CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
-               INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
-               VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
-             END;
-             CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
-               INSERT INTO decisions_fts(decisions_fts, rowid, scope, title, content, tags)
-               VALUES ('delete', old.rowid, old.scope, old.title, old.content, old.tags);
-               INSERT INTO decisions_fts(rowid, scope, title, content, tags)
-               VALUES (new.rowid, new.scope, new.title, new.content, new.tags);
-             END;",
-        )?;
+    fn ensure_fts_triggers_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(FTS_TRIGGERS_V1_SQL)?;
         Ok(())
     }
 
-    /// Backward-compatible column add for stores created before `column` existed.
-    fn ensure_column(&self, column: &str, ty: &str) -> Result<()> {
-        let has: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE name=?1",
-            params![column],
-            |r| r.get(0),
-        )?;
-        if has == 0 {
-            self.conn
-                .execute_batch(&format!("ALTER TABLE decisions ADD COLUMN {column} {ty};"))?;
+    fn ensure_identity_triggers_on(conn: &Connection) -> Result<()> {
+        conn.execute_batch(IDENTITY_TRIGGERS_V1_SQL)?;
+        Ok(())
+    }
+
+    fn backfill_record_digests_on(conn: &Connection) -> Result<()> {
+        let rows = Self::record_digest_rows_on(conn)?;
+        for row in rows {
+            let sealed = record_digest_v1(&row)?;
+            conn.execute(
+                "UPDATE decisions SET record_digest_v1=?1 WHERE id=?2",
+                params![sealed, row.id],
+            )?;
         }
         Ok(())
+    }
+
+    fn record_digest_rows_on(conn: &Connection) -> Result<Vec<RecordDigestRow>> {
+        let mut stmt = conn.prepare(
+            "SELECT id,scope,kind,title,content,importance,source,author,commit_sha,date,tags,fact_key,
+                    valid_from,declared_valid_until,record_digest_v1
+             FROM decisions ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], record_digest_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn record_digest_row_in_scope_on(
+        conn: &Connection,
+        id: &str,
+        scope: &str,
+    ) -> Result<Option<RecordDigestRow>> {
+        Ok(conn
+            .query_row(
+                "SELECT id,scope,kind,title,content,importance,source,author,commit_sha,date,tags,fact_key,
+                        valid_from,declared_valid_until,record_digest_v1
+                 FROM decisions WHERE id=?1 AND scope=?2",
+                params![id, scope],
+                record_digest_row,
+            )
+            .optional()?)
+    }
+
+    fn record_digest_row_by_id_on(conn: &Connection, id: &str) -> Result<Option<RecordDigestRow>> {
+        Ok(conn
+            .query_row(
+                "SELECT id,scope,kind,title,content,importance,source,author,commit_sha,date,tags,fact_key,
+                        valid_from,declared_valid_until,record_digest_v1
+                 FROM decisions WHERE id=?1",
+                params![id],
+                record_digest_row,
+            )
+            .optional()?)
+    }
+
+    fn evidence_identity_on(
+        conn: &Connection,
+        id: &str,
+        scope: &str,
+    ) -> Result<EvidenceIdentityResolution> {
+        let fail = |code, message| EvidenceIdentityResolution::Error {
+            contract: EVIDENCE_IDENTITY_CONTRACT,
+            code,
+            message,
+            retryable: false,
+        };
+        let Some(row) = Self::record_digest_row_in_scope_on(conn, id, scope)? else {
+            return Ok(fail(
+                EvidenceIdentityErrorCode::NotFound,
+                "record was not found in the requested scope".to_owned(),
+            ));
+        };
+        let Some(sealed) = row.sealed_digest.as_deref() else {
+            return Ok(fail(
+                EvidenceIdentityErrorCode::IdentityConflict,
+                "record identity does not match its sealed evidence".to_owned(),
+            ));
+        };
+        let calculated = record_digest_v1(&row).ok();
+        if calculated.as_deref() != Some(sealed) {
+            return Ok(fail(
+                EvidenceIdentityErrorCode::IdentityConflict,
+                "record identity does not match its sealed evidence".to_owned(),
+            ));
+        }
+        let store_instance_id: String = conn.query_row(
+            "SELECT store_instance_id FROM open_why_metadata WHERE singleton=1",
+            [],
+            |record| record.get(0),
+        )?;
+        Ok(EvidenceIdentityResolution::Ok {
+            identity: EvidenceIdentity {
+                contract: EVIDENCE_IDENTITY_CONTRACT,
+                record_digest_contract: RECORD_DIGEST_CONTRACT,
+                store_instance_id,
+                scope: row.scope,
+                record_id: row.id,
+                record_digest: sealed.to_owned(),
+            },
+        })
+    }
+
+    /// Return the persistent provider-owned store and verified schema identity.
+    pub fn store_identity(&self) -> Result<StoreIdentity> {
+        let tx = self.conn.unchecked_transaction()?;
+        let compatibility = inspect_connection(&tx);
+        tx.rollback()?;
+        match compatibility {
+            StoreCompatibility::Compatible { identity } => Ok(identity),
+            StoreCompatibility::Incompatible { code, message, .. } => {
+                anyhow::bail!("store compatibility {code:?}: {message}")
+            }
+            other => anyhow::bail!("open store is not schema-compatible: {other:?}"),
+        }
+    }
+
+    /// Return the sealed identity for an exact record in an exact scope.
+    pub fn evidence_identity_in_scope(
+        &self,
+        id: &str,
+        scope: &str,
+    ) -> Result<EvidenceIdentityResolution> {
+        let tx = self.conn.unchecked_transaction()?;
+        let resolution = Self::evidence_identity_on(&tx, id, scope)?;
+        tx.rollback()?;
+        Ok(resolution)
     }
 
     /// Capture one decision. Idempotent: re-capturing the same (identity, content)
@@ -247,42 +762,88 @@ impl Store {
         };
         let now = now_epoch();
         let now_str = epoch_to_iso(now);
-        self.conn.execute(
-            "INSERT OR IGNORE INTO decisions
+        let tx = self.conn.unchecked_transaction()?;
+        let existing = Self::record_digest_row_by_id_on(&tx, &id)?;
+        let observed_at = existing
+            .as_ref()
+            .map(|row| row.date.clone())
+            .unwrap_or_else(|| now_str.clone());
+        let candidate = RecordDigestRow {
+            id: id.clone(),
+            scope: scope.to_owned(),
+            kind: d.kind.clone(),
+            title: d.subject.clone(),
+            content: d.body.clone(),
+            importance,
+            source: d.source.clone(),
+            author: d.author.clone(),
+            commit_sha: commit.clone(),
+            date: observed_at.clone(),
+            tags: None,
+            fact_key: None,
+            valid_from: None,
+            declared_valid_until: None,
+            sealed_digest: None,
+        };
+        let record_digest = record_digest_v1(&candidate)?;
+        let exists = match existing {
+            Some(existing) => {
+                ensure_exact_record_replay(&existing, &candidate)?;
+                true
+            }
+            None => false,
+        };
+        let retirement = match supersedes.filter(|sid| !sid.is_empty()) {
+            Some(sid) => Some((sid, pending_retirement_time_on(&tx, sid, scope, &id, now)?)),
+            None => None,
+        };
+        if !exists {
+            tx.execute(
+                "INSERT OR IGNORE INTO decisions
                (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                content_digest, source_identity, created_epoch)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![
-                id,
-                d.kind,
-                d.subject,
-                d.body,
-                importance,
-                d.source,
-                d.author,
-                commit,
-                now_str,
-                scope,
-                content_digest,
-                identity,
-                now
-            ],
-        )?;
-        if let Some(sid) = supersedes {
-            if !sid.is_empty() {
-                self.conn.execute(
-                    "UPDATE decisions SET superseded_by=?1, valid_until=?2
-                     WHERE id=?3 AND superseded_by IS NULL",
-                    params![id, now_str, sid],
-                )?;
+                content_digest, source_identity, created_epoch, record_digest_v1)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                params![
+                    id,
+                    d.kind,
+                    d.subject,
+                    d.body,
+                    importance,
+                    d.source,
+                    d.author,
+                    commit,
+                    observed_at,
+                    scope,
+                    content_digest,
+                    identity,
+                    now,
+                    record_digest
+                ],
+            )?;
+        }
+        if let Some((sid, Some(retirement))) = retirement {
+            let affected = tx.execute(
+                "UPDATE decisions SET superseded_by=?1, valid_until=?2
+                 WHERE id=?3 AND scope=?4 AND superseded_by IS NULL
+                   AND valid_from IS ?5 AND valid_until IS ?6",
+                params![
+                    id,
+                    retirement.retirement_at,
+                    sid,
+                    scope,
+                    retirement.expected_valid_from,
+                    retirement.expected_valid_until
+                ],
+            )?;
+            if affected != 1 {
+                return Err(SupersessionConflict.into());
             }
         }
-        let existing: String = self.conn.query_row(
-            "SELECT id FROM decisions WHERE source_identity=?1 AND content_digest=?2",
-            params![identity, content_digest],
-            |r| r.get(0),
-        )?;
-        Ok(existing)
+        let stored = Self::record_digest_row_by_id_on(&tx, &id)?
+            .context("capture insert did not persist its deterministic record id")?;
+        ensure_exact_record_replay(&stored, &candidate)?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Capture a decision with an externally minted stable ID and an
@@ -299,6 +860,38 @@ impl Store {
         fact_key: Option<&str>,
         supersedes: Option<&str>,
     ) -> Result<String> {
+        self.capture_external_with_pre_retirement_hook(
+            ExternalCaptureRequest {
+                decision: d,
+                scope,
+                id,
+                valid_from,
+                fact_key,
+                supersedes,
+            },
+            |_| Ok(()),
+        )
+    }
+
+    fn capture_external_with_pre_retirement_hook<F>(
+        &self,
+        request: ExternalCaptureRequest<'_>,
+        before_retirements: F,
+    ) -> Result<String>
+    where
+        F: FnOnce(&Transaction<'_>) -> Result<()>,
+    {
+        let ExternalCaptureRequest {
+            decision: d,
+            scope,
+            id,
+            valid_from,
+            fact_key,
+            supersedes,
+        } = request;
+        if valid_from.is_some_and(|value| iso_to_epoch(value).is_none()) {
+            return Err(CurrentRecordErrorCode::InvalidTemporalData.into());
+        }
         let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
         let importance = d.importance.clamp(0.0, 1.0);
         let commit = if d.kind == "commit" {
@@ -313,17 +906,44 @@ impl Store {
             .unwrap_or_else(|| now_str.clone());
         let identity = format!("external:{scope}:{id}");
         let fact_key = fact_key.filter(|k| !k.is_empty()).map(String::from);
-        let embedding = self.embed_text(&d.subject, &d.body, None);
-        self.conn.execute(
-            "INSERT OR IGNORE INTO decisions
-               (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                valid_from, fact_key, embedding, updated_at, content_digest, source_identity, created_epoch)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-            params![
-                id, d.kind, d.subject, d.body, importance, d.source, d.author, commit,
-                now_str, scope, vfrom, fact_key, embedding, now_str, content_digest, identity, now
-            ],
-        )?;
+        let tx = self.conn.unchecked_transaction()?;
+        let existing = Self::record_digest_row_by_id_on(&tx, id)?;
+        let observed_at = existing
+            .as_ref()
+            .map(|row| row.date.clone())
+            .unwrap_or_else(|| now_str.clone());
+        let effective_valid_from = match valid_from {
+            Some(_) => Some(vfrom.clone()),
+            None => existing
+                .as_ref()
+                .and_then(|row| row.valid_from.clone())
+                .or_else(|| Some(vfrom.clone())),
+        };
+        let candidate = RecordDigestRow {
+            id: id.to_owned(),
+            scope: scope.to_owned(),
+            kind: d.kind.clone(),
+            title: d.subject.clone(),
+            content: d.body.clone(),
+            importance,
+            source: d.source.clone(),
+            author: d.author.clone(),
+            commit_sha: commit.clone(),
+            date: observed_at.clone(),
+            tags: None,
+            fact_key: fact_key.clone(),
+            valid_from: effective_valid_from.clone(),
+            declared_valid_until: None,
+            sealed_digest: None,
+        };
+        let record_digest = record_digest_v1(&candidate)?;
+        let exists = match existing {
+            Some(existing) => {
+                ensure_exact_record_replay(&existing, &candidate)?;
+                true
+            }
+            None => false,
+        };
         // Retire predecessors: the explicit supersedes id, then any current record that
         // shares the fact_key or the (kind, title).
         let mut predecessors: Vec<String> = supersedes
@@ -332,8 +952,7 @@ impl Store {
             .into_iter()
             .collect();
         let keyed: Vec<String> = match fact_key.as_deref() {
-            Some(key) => self
-                .conn
+            Some(key) => tx
                 .prepare(
                     "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND fact_key=?3
                    AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
@@ -343,8 +962,7 @@ impl Store {
                 .collect(),
             None => Vec::new(),
         };
-        let titled: Vec<String> = self
-            .conn
+        let titled: Vec<String> = tx
             .prepare(
                 "SELECT id FROM decisions WHERE scope=?1 AND kind=?2 AND title=?3
                AND id != ?4 AND superseded_by IS NULL AND valid_until IS NULL",
@@ -356,29 +974,121 @@ impl Store {
         predecessors.extend(titled);
         predecessors.sort();
         predecessors.dedup();
-        for old in predecessors {
-            self.conn.execute(
-                "UPDATE decisions SET superseded_by=?1, valid_until=?2
-                 WHERE id=?3 AND superseded_by IS NULL",
-                params![id, now_str, old],
+        let retirements = predecessors
+            .into_iter()
+            .map(|old| {
+                pending_retirement_time_on(&tx, &old, scope, id, now)
+                    .map(|retirement_at| (old, retirement_at))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !exists {
+            let embedding = self.embed_text(&d.subject, &d.body, None);
+            tx.execute(
+                "INSERT OR IGNORE INTO decisions
+               (id, kind, title, content, importance, source, author, commit_sha, date, scope,
+                valid_from, fact_key, embedding, updated_at, content_digest, source_identity,
+                created_epoch, record_digest_v1)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                params![
+                    id,
+                    d.kind,
+                    d.subject,
+                    d.body,
+                    importance,
+                    d.source,
+                    d.author,
+                    commit,
+                    observed_at,
+                    scope,
+                    effective_valid_from,
+                    fact_key,
+                    embedding,
+                    now_str,
+                    content_digest,
+                    identity,
+                    now,
+                    record_digest
+                ],
             )?;
         }
+        before_retirements(&tx)?;
+        for (old, retirement) in retirements {
+            if let Some(retirement) = retirement {
+                let affected = tx.execute(
+                    "UPDATE decisions SET superseded_by=?1, valid_until=?2
+                     WHERE id=?3 AND scope=?4 AND superseded_by IS NULL
+                       AND valid_from IS ?5 AND valid_until IS ?6",
+                    params![
+                        id,
+                        retirement.retirement_at,
+                        old,
+                        scope,
+                        retirement.expected_valid_from,
+                        retirement.expected_valid_until
+                    ],
+                )?;
+                if affected != 1 {
+                    return Err(SupersessionConflict.into());
+                }
+            }
+        }
+        let stored = Self::record_digest_row_by_id_on(&tx, id)?
+            .context("capture insert did not persist its external record id")?;
+        ensure_exact_record_replay(&stored, &candidate)?;
+        tx.commit()?;
         Ok(id.to_string())
     }
 
     /// Bulk-import externally-minted decisions, preserving ids, temporal windows,
-    /// supersession, and git linkage. Idempotent: re-importing the same id replaces it.
+    /// supersession, and git linkage. Exact immutable envelopes replay; a changed
+    /// envelope for an existing ID fails before any record or relation effect.
     pub fn import_external(&self, rows: &[ExternalDecision]) -> Result<usize> {
+        self.import_external_exact(rows)
+    }
+
+    /// Compatibility alias for the strict import contract.
+    pub fn import_external_sealed(&self, rows: &[ExternalDecision]) -> Result<usize> {
+        self.import_external_exact(rows)
+    }
+
+    fn import_external_exact(&self, rows: &[ExternalDecision]) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
+        let mut prepared = Vec::with_capacity(rows.len());
+        let mut candidates = HashMap::new();
+        for row in rows {
+            let candidate = record_digest_row_from_external(row);
+            let candidate_digest = record_digest_v1(&candidate)?;
+            let duplicate = match candidates.get(&row.id) {
+                Some(previous) if previous == &candidate_digest => true,
+                Some(_) => return Err(RecordIdentityConflict.into()),
+                None => {
+                    candidates.insert(row.id.clone(), candidate_digest.clone());
+                    false
+                }
+            };
+            let exists = duplicate
+                || match Self::record_digest_row_by_id_on(&tx, &row.id)? {
+                    Some(existing) => {
+                        ensure_exact_record_replay(&existing, &candidate)?;
+                        true
+                    }
+                    None => false,
+                };
+            prepared.push((row, candidate_digest, exists));
+        }
         {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO decisions
+                "INSERT INTO decisions
                    (id, kind, title, content, importance, source, author, commit_sha, date, scope,
                     superseded_by, valid_from, valid_until, fact_key, embedding, updated_at,
-                    accessed_count, times_injected, effectiveness, tags, content_digest, source_identity, created_epoch)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                    accessed_count, times_injected, effectiveness, tags, content_digest,
+                    source_identity, created_epoch, declared_valid_until, record_digest_v1)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
             )?;
-            for r in rows {
+            for (r, record_digest, exists) in &prepared {
+                if *exists {
+                    continue;
+                }
                 let content_digest = digest(&format!("{}\n{}", r.title, r.content));
                 let identity = format!("external:{}:{}", r.scope, r.id);
                 let epoch = iso_to_epoch(&r.date).unwrap_or(now_epoch());
@@ -406,7 +1116,9 @@ impl Store {
                     r.tags,
                     content_digest,
                     identity,
-                    epoch
+                    epoch,
+                    r.valid_until,
+                    record_digest
                 ])?;
             }
         }
@@ -415,14 +1127,14 @@ impl Store {
                 "INSERT OR IGNORE INTO decision_git_refs (decision_id, commit_hash, commit_subject)
                  VALUES (?1,?2,?3)",
             )?;
-            for r in rows {
+            for (r, _, _) in &prepared {
                 for g in &r.git_refs {
                     stmt.execute(params![r.id, g.commit_hash, g.commit_subject])?;
                 }
             }
         }
         tx.commit()?;
-        Ok(rows.len())
+        Ok(prepared.iter().filter(|(_, _, exists)| !exists).count())
     }
 
     /// Search active decisions across scopes and hybrid-rank them. `kinds` is an optional
@@ -823,6 +1535,24 @@ impl Store {
         self.get_current_evidence_at(id, now_epoch(), MAX_SUPERSESSION_CHAIN)
     }
 
+    /// Resolve an exact scoped record at the production clock and return the
+    /// current record together with its verified immutable evidence identity.
+    pub fn get_current_evidence_in_scope(
+        &self,
+        id: &str,
+        scope: &str,
+    ) -> Result<ScopedCurrentRecordResolution> {
+        let read = self.get_current_evidence_at_with_scope_and_hook(
+            id,
+            Some(scope),
+            now_epoch(),
+            MAX_SUPERSESSION_CHAIN,
+            true,
+            || Ok(()),
+        )?;
+        Ok(scoped_current_resolution(read))
+    }
+
     /// Clock-injected implementation used by the MCP server and deterministic tests.
     /// MCP callers never supply `as_of`; the server owns that clock authority.
     pub(crate) fn get_current_evidence_at(
@@ -831,7 +1561,11 @@ impl Store {
         as_of: i64,
         chain_cap: usize,
     ) -> Result<CurrentRecordResolution> {
-        self.get_current_evidence_at_with_scope_and_hook(id, None, as_of, chain_cap, || Ok(()))
+        Ok(self
+            .get_current_evidence_at_with_scope_and_hook(id, None, as_of, chain_cap, false, || {
+                Ok(())
+            })?
+            .resolution)
     }
 
     /// Resolve an exact record for an untrusted scoped caller without revealing
@@ -843,9 +1577,16 @@ impl Store {
         as_of: i64,
         chain_cap: usize,
     ) -> Result<CurrentRecordResolution> {
-        self.get_current_evidence_at_with_scope_and_hook(id, Some(scope), as_of, chain_cap, || {
-            Ok(())
-        })
+        Ok(self
+            .get_current_evidence_at_with_scope_and_hook(
+                id,
+                Some(scope),
+                as_of,
+                chain_cap,
+                false,
+                || Ok(()),
+            )?
+            .resolution)
     }
 
     fn get_current_evidence_at_with_scope_and_hook(
@@ -854,8 +1595,9 @@ impl Store {
         scope: Option<&str>,
         as_of: i64,
         chain_cap: usize,
+        include_identity: bool,
         after_root_lookup: impl FnOnce() -> Result<()>,
-    ) -> Result<CurrentRecordResolution> {
+    ) -> Result<CurrentEvidenceRead> {
         let as_of_iso = epoch_to_iso(as_of);
         let fail = |code, message: String| CurrentRecordResolution::Error {
             contract: CURRENT_RATIONALE_CONTRACT,
@@ -876,10 +1618,13 @@ impl Store {
         let mut after_root_lookup = Some(after_root_lookup);
         loop {
             if !seen.insert(cursor.clone()) {
-                return Ok(fail(
-                    CurrentRecordErrorCode::Cycle,
-                    format!("supersession cycle reaches `{cursor}`"),
-                ));
+                return Ok(CurrentEvidenceRead {
+                    resolution: fail(
+                        CurrentRecordErrorCode::Cycle,
+                        format!("supersession cycle reaches `{cursor}`"),
+                    ),
+                    identity: None,
+                });
             }
             let Some(node) = Self::current_node_on(&transaction, &cursor, scope)? else {
                 let (code, message) = if chain.is_empty() {
@@ -902,7 +1647,10 @@ impl Store {
                         },
                     )
                 };
-                return Ok(fail(code, message));
+                return Ok(CurrentEvidenceRead {
+                    resolution: fail(code, message),
+                    identity: None,
+                });
             };
             if chain.is_empty() {
                 after_root_lookup
@@ -916,10 +1664,13 @@ impl Store {
             ] {
                 if let Some(raw) = raw.filter(|value| !value.is_empty()) {
                     if Self::temporal_epoch_on(&transaction, raw)?.is_none() {
-                        return Ok(fail(
-                            CurrentRecordErrorCode::InvalidTemporalData,
-                            format!("record `{}` has invalid {field} `{raw}`", node.id),
-                        ));
+                        return Ok(CurrentEvidenceRead {
+                            resolution: fail(
+                                CurrentRecordErrorCode::InvalidTemporalData,
+                                format!("record `{}` has invalid {field} `{raw}`", node.id),
+                            ),
+                            identity: None,
+                        });
                     }
                 }
             }
@@ -934,10 +1685,13 @@ impl Store {
                 let until =
                     Self::temporal_epoch_on(&transaction, valid_until)?.expect("validated above");
                 if from >= until {
-                    return Ok(fail(
-                        CurrentRecordErrorCode::InvalidTemporalData,
-                        format!("record `{}` has a non-positive validity interval", node.id),
-                    ));
+                    return Ok(CurrentEvidenceRead {
+                        resolution: fail(
+                            CurrentRecordErrorCode::InvalidTemporalData,
+                            format!("record `{}` has a non-positive validity interval", node.id),
+                        ),
+                        identity: None,
+                    });
                 }
             }
 
@@ -949,10 +1703,13 @@ impl Store {
             chain.push(node);
             if let Some(next) = next {
                 if chain.len() >= chain_cap {
-                    return Ok(fail(
-                        CurrentRecordErrorCode::TraversalLimit,
-                        format!("supersession chain exceeds {chain_cap} records"),
-                    ));
+                    return Ok(CurrentEvidenceRead {
+                        resolution: fail(
+                            CurrentRecordErrorCode::TraversalLimit,
+                            format!("supersession chain exceeds {chain_cap} records"),
+                        ),
+                        identity: None,
+                    });
                 }
                 cursor = next;
                 continue;
@@ -965,23 +1722,29 @@ impl Store {
             let epoch =
                 Self::temporal_epoch_on(&transaction, valid_from)?.expect("validated above");
             if as_of < epoch {
-                return Ok(fail(
-                    CurrentRecordErrorCode::NotYetValid,
-                    format!("record `{}` is not current at {as_of_iso}", current.id),
-                ));
+                return Ok(CurrentEvidenceRead {
+                    resolution: fail(
+                        CurrentRecordErrorCode::NotYetValid,
+                        format!("record `{}` is not current at {as_of_iso}", current.id),
+                    ),
+                    identity: None,
+                });
             }
         }
         if let Some(valid_until) = current.valid_until.as_deref().filter(|v| !v.is_empty()) {
             let epoch =
                 Self::temporal_epoch_on(&transaction, valid_until)?.expect("validated above");
             if as_of >= epoch {
-                return Ok(fail(
-                    CurrentRecordErrorCode::ExpiredWithoutSuccessor,
-                    format!(
-                        "record `{}` expired without a successor at `{valid_until}`",
-                        current.id
+                return Ok(CurrentEvidenceRead {
+                    resolution: fail(
+                        CurrentRecordErrorCode::ExpiredWithoutSuccessor,
+                        format!(
+                            "record `{}` expired without a successor at `{valid_until}`",
+                            current.id
+                        ),
                     ),
-                ));
+                    identity: None,
+                });
             }
         }
 
@@ -994,14 +1757,25 @@ impl Store {
                 commit_subject,
             })
             .collect();
-        Ok(CurrentRecordResolution::Ok {
-            contract: CURRENT_RATIONALE_CONTRACT,
-            as_of: as_of_iso,
-            requested_id: id.to_string(),
-            current_id: current.id.clone(),
-            record: Box::new(record),
-            git_refs,
-            supersession_chain: chain.into_iter().map(|node| node.id).collect(),
+        let identity = if include_identity {
+            match Self::evidence_identity_on(&transaction, &current.id, &record.scope)? {
+                EvidenceIdentityResolution::Ok { identity } => Some(identity),
+                EvidenceIdentityResolution::Error { .. } => None,
+            }
+        } else {
+            None
+        };
+        Ok(CurrentEvidenceRead {
+            resolution: CurrentRecordResolution::Ok {
+                contract: CURRENT_RATIONALE_CONTRACT,
+                as_of: as_of_iso,
+                requested_id: id.to_string(),
+                current_id: current.id.clone(),
+                record: Box::new(record),
+                git_refs,
+                supersession_chain: chain.into_iter().map(|node| node.id).collect(),
+            },
+            identity,
         })
     }
 
@@ -1599,25 +2373,62 @@ impl Store {
     /// Bulk-import mined decisions (commits + ADRs) into a scope. Idempotent.
     pub fn import_decisions(&self, scope: &str, decisions: &[Decision]) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
+        let mut prepared = Vec::with_capacity(decisions.len());
+        for decision in decisions {
+            let identity = if decision.kind == "commit" {
+                format!("git:{scope}:commit:{}", decision.sha)
+            } else {
+                format!("git:{scope}:file:{}", decision.source)
+            };
+            let content_digest = digest(&format!("{}\n{}", decision.subject, decision.body));
+            let id = if decision.kind == "commit" && !decision.sha.is_empty() {
+                decision.sha.clone()
+            } else {
+                digest(&format!("{identity}\n{content_digest}"))
+            };
+            let record = RecordDigestRow {
+                id: id.clone(),
+                scope: scope.to_owned(),
+                kind: decision.kind.clone(),
+                title: decision.subject.clone(),
+                content: decision.body.clone(),
+                importance: decision.importance.clamp(0.0, 1.0),
+                source: decision.source.clone(),
+                author: decision.author.clone(),
+                commit_sha: if decision.kind == "commit" {
+                    decision.sha.clone()
+                } else {
+                    String::new()
+                },
+                date: decision.date.clone(),
+                tags: None,
+                fact_key: None,
+                valid_from: None,
+                declared_valid_until: None,
+                sealed_digest: None,
+            };
+            let record_digest = record_digest_v1(&record)?;
+            let exists = Self::record_digest_row_by_id_on(&tx, &id)?.is_some();
+            prepared.push((
+                decision,
+                id,
+                identity,
+                content_digest,
+                record_digest,
+                exists,
+            ));
+        }
         {
             let mut stmt = tx.prepare(
-                "INSERT OR IGNORE INTO decisions
+                "INSERT INTO decisions
                    (id, kind, title, content, importance, source, author, commit_sha, date, scope,
-                    content_digest, source_identity, created_epoch)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                    content_digest, source_identity, created_epoch, record_digest_v1)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             )?;
-            for d in decisions {
-                let identity = if d.kind == "commit" {
-                    format!("git:{scope}:commit:{}", d.sha)
-                } else {
-                    format!("git:{scope}:file:{}", d.source)
-                };
-                let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
-                let id = if d.kind == "commit" && !d.sha.is_empty() {
-                    d.sha.clone()
-                } else {
-                    digest(&format!("{identity}\n{content_digest}"))
-                };
+            for (d, id, identity, content_digest, record_digest, exists) in &prepared {
+                if *exists {
+                    continue;
+                }
                 let commit = if d.kind == "commit" {
                     d.sha.clone()
                 } else {
@@ -1638,7 +2449,8 @@ impl Store {
                     scope,
                     content_digest,
                     identity,
-                    epoch
+                    epoch,
+                    record_digest
                 ])?;
             }
         }
@@ -1689,6 +2501,716 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(Some(eff))
+    }
+}
+
+fn inspect_connection(conn: &Connection) -> StoreCompatibility {
+    inspect_connection_inner(conn).unwrap_or_else(|_| StoreCompatibility::Incompatible {
+        code: StoreCompatibilityErrorCode::SchemaCorrupt,
+        message: "store schema could not be read safely".to_owned(),
+        found_version: None,
+    })
+}
+
+fn immutable_sqlite_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'.' | b'_' | b'-' | b'~' => {
+                uri.push(char::from(byte))
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
+fn store_may_have_live_wal(path: &Path) -> Result<bool> {
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            return Ok(true);
+        }
+    }
+    let mut header = [0_u8; 20];
+    let mut file = std::fs::File::open(path)?;
+    if file.read(&mut header)? < header.len() || &header[..16] != b"SQLite format 3\0" {
+        return Ok(false);
+    }
+    Ok(header[18] == 2 || header[19] == 2)
+}
+
+fn require_store_instance_id(store_instance_id: Option<&str>) -> Result<&str> {
+    let Some(store_instance_id) = store_instance_id else {
+        return Err(StoreIdentityBindingError {
+            code: StoreIdentityBindingErrorCode::IdentityRequired,
+            message: "an explicit provider store identity is required for initial binding",
+        }
+        .into());
+    };
+    if !valid_store_instance_id(store_instance_id) {
+        return Err(StoreIdentityBindingError {
+            code: StoreIdentityBindingErrorCode::InvalidIdentity,
+            message: "provider store identity must be 1 to 128 safe ASCII bytes",
+        }
+        .into());
+    }
+    Ok(store_instance_id)
+}
+
+fn verify_store_binding(identity: &StoreIdentity, expected: Option<&str>) -> Result<()> {
+    if let Some(expected) = expected {
+        require_store_instance_id(Some(expected))?;
+        if identity.store_instance_id != expected {
+            return Err(StoreIdentityBindingError {
+                code: StoreIdentityBindingErrorCode::IdentityMismatch,
+                message: "provider store identity does not match the bound store",
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn inspect_connection_inner(conn: &Connection) -> Result<StoreCompatibility> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let object_count: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'decisions_fts_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let has_metadata = object_exists(conn, "table", "open_why_metadata")?;
+    let has_ledger = object_exists(conn, "table", "open_why_migrations")?;
+
+    if version == 0 {
+        if has_metadata || has_ledger {
+            return Ok(incompatible(
+                StoreCompatibilityErrorCode::PartialMigration,
+                "store contains partial identity migration state",
+                Some(version),
+            ));
+        }
+        if object_count == 0 {
+            return Ok(StoreCompatibility::Uninitialized);
+        }
+        if schema_sha256_on(conn)? == expected_legacy_schema_sha256_v0()? {
+            return Ok(StoreCompatibility::MigrationRequired {
+                from: 0,
+                to: STORE_SCHEMA_VERSION,
+                plan_digest: migration_plan_digest(),
+            });
+        }
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::ShapeDrift,
+            "database is not a recognized open-why store",
+            Some(version),
+        ));
+    }
+    if version > STORE_SCHEMA_VERSION {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::SchemaNewer,
+            "store schema is newer than this open-why build",
+            Some(version),
+        ));
+    }
+    if version != STORE_SCHEMA_VERSION || !has_metadata || !has_ledger {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::PartialMigration,
+            "store identity migration is incomplete",
+            Some(version),
+        ));
+    }
+
+    let metadata_count: i64 =
+        conn.query_row("SELECT count(*) FROM open_why_metadata", [], |row| {
+            row.get(0)
+        })?;
+    if metadata_count != 1 {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::SchemaCorrupt,
+            "store identity metadata is not a singleton",
+            Some(version),
+        ));
+    }
+    let (family, metadata_version, stored_schema, stored_plan, store_instance_id): (
+        String,
+        u32,
+        String,
+        String,
+        String,
+    ) = conn.query_row(
+        "SELECT schema_family,schema_version,schema_sha256,migration_plan_digest,
+                store_instance_id
+         FROM open_why_metadata WHERE singleton=1",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    if metadata_version > STORE_SCHEMA_VERSION {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::SchemaNewer,
+            "store metadata is newer than this open-why build",
+            Some(metadata_version),
+        ));
+    }
+    if family != STORE_SCHEMA_FAMILY || metadata_version != version {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::SchemaCorrupt,
+            "store schema identity metadata is inconsistent",
+            Some(version),
+        ));
+    }
+    if !valid_store_instance_id(&store_instance_id) {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::SchemaCorrupt,
+            "store instance identity is invalid",
+            Some(version),
+        ));
+    }
+    if stored_plan != migration_plan_digest() {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::ChecksumMismatch,
+            "store migration plan digest does not match",
+            Some(version),
+        ));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT sequence,migration_id,checksum_sha256
+         FROM open_why_migrations ORDER BY sequence",
+    )?;
+    let ledger = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, usize>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if ledger.len() != MIGRATION_STEPS.len() {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::PartialMigration,
+            "store migration ledger is incomplete",
+            Some(version),
+        ));
+    }
+    for (index, ((sequence, id, checksum), (expected_id, specification))) in
+        ledger.iter().zip(MIGRATION_STEPS).enumerate()
+    {
+        if *sequence != index + 1
+            || id != expected_id
+            || checksum != &sha256_hex(specification.as_bytes())
+        {
+            return Ok(incompatible(
+                StoreCompatibilityErrorCode::ChecksumMismatch,
+                "store migration ledger checksum does not match",
+                Some(version),
+            ));
+        }
+    }
+    let expected_schema = expected_schema_sha256_v1()?;
+    if !required_shape_is_valid(conn)?
+        || stored_schema != expected_schema
+        || schema_sha256_on(conn)? != expected_schema
+    {
+        return Ok(incompatible(
+            StoreCompatibilityErrorCode::ShapeDrift,
+            "store schema shape does not match its declared identity",
+            Some(version),
+        ));
+    }
+
+    Ok(StoreCompatibility::Compatible {
+        identity: StoreIdentity {
+            store_instance_id,
+            schema_family: STORE_SCHEMA_FAMILY,
+            schema_version: STORE_SCHEMA_VERSION,
+            schema_sha256: stored_schema,
+        },
+    })
+}
+
+fn incompatible(
+    code: StoreCompatibilityErrorCode,
+    message: &str,
+    found_version: Option<u32>,
+) -> StoreCompatibility {
+    StoreCompatibility::Incompatible {
+        code,
+        message: message.to_owned(),
+        found_version,
+    }
+}
+
+fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE type=?1 AND name=?2",
+        params![kind, name],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
+}
+
+fn required_shape_is_valid(conn: &Connection) -> Result<bool> {
+    for (kind, name) in REQUIRED_OBJECTS {
+        if !object_exists(conn, kind, name)? {
+            return Ok(false);
+        }
+    }
+    let expected: HashSet<&str> = REQUIRED_DECISION_COLUMNS.iter().copied().collect();
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('decisions')")?;
+    let actual = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    if actual.len() != expected.len() || !expected.iter().all(|name| actual.contains(*name)) {
+        return Ok(false);
+    }
+    for (table, expected_columns) in [
+        (
+            "decision_git_refs",
+            &["commit_hash", "commit_subject", "created_at", "decision_id"][..],
+        ),
+        (
+            "feedback_log",
+            &["created_at", "delta", "helpful", "id", "memory_id"][..],
+        ),
+        (
+            "open_why_metadata",
+            &[
+                "migration_plan_digest",
+                "schema_family",
+                "schema_sha256",
+                "schema_version",
+                "singleton",
+                "store_instance_id",
+            ][..],
+        ),
+        (
+            "open_why_migrations",
+            &["applied_at", "checksum_sha256", "migration_id", "sequence"][..],
+        ),
+    ] {
+        let sql = format!("SELECT name FROM pragma_table_info('{table}') ORDER BY name");
+        let mut stmt = conn.prepare(&sql)?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if columns != expected_columns {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn schema_sha256_on(conn: &Connection) -> Result<String> {
+    let mut canonical = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name,tbl_name",
+    )?;
+    let objects = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (kind, name, table, sql) in objects {
+        append_required(&mut canonical, "object_type", kind.as_bytes());
+        append_required(&mut canonical, "object_name", name.as_bytes());
+        append_required(&mut canonical, "object_table", table.as_bytes());
+        append_required(
+            &mut canonical,
+            "object_sql",
+            normalize_schema_sql(&sql).as_bytes(),
+        );
+    }
+    let mut tables = conn.prepare(
+        "SELECT name FROM sqlite_schema
+         WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )?;
+    let tables = tables
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for table in tables {
+        append_required(&mut canonical, "foreign_key_table", table.as_bytes());
+        let escaped = table.replace('\'', "''");
+        let mut foreign_keys = conn.prepare(&format!(
+            "SELECT id,seq,\"table\",\"from\",\"to\",on_update,on_delete,match
+             FROM pragma_foreign_key_list('{escaped}') ORDER BY id,seq"
+        ))?;
+        let rows = foreign_keys
+            .query_map([], |row| {
+                Ok(format!(
+                    "{}|{}|{}|{}|{}|{}|{}|{}",
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for row in rows {
+            append_required(&mut canonical, "foreign_key", row.as_bytes());
+        }
+    }
+    Ok(sha256_hex(&canonical))
+}
+
+fn expected_schema_sha256_v1() -> Result<String> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(CORE_SCHEMA_V1_SQL)?;
+    conn.execute_batch(FEEDBACK_SCHEMA_V1_SQL)?;
+    conn.execute_batch(FTS_SCHEMA_V1_SQL)?;
+    conn.execute_batch(FTS_TRIGGERS_V1_SQL)?;
+    conn.execute_batch(IDENTITY_SCHEMA_V1_SQL)?;
+    conn.execute_batch(IDENTITY_TRIGGERS_V1_SQL)?;
+    schema_sha256_on(&conn)
+}
+
+fn expected_legacy_schema_sha256_v0() -> Result<String> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(LEGACY_SCHEMA_V0_SQL)?;
+    schema_sha256_on(&conn)
+}
+
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn migration_plan_digest() -> String {
+    let mut canonical = Vec::new();
+    for (id, specification) in MIGRATION_STEPS {
+        append_required(&mut canonical, "migration_id", id.as_bytes());
+        append_required(
+            &mut canonical,
+            "checksum_sha256",
+            sha256_hex(specification.as_bytes()).as_bytes(),
+        );
+    }
+    sha256_hex(&canonical)
+}
+
+fn valid_store_instance_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn record_digest_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordDigestRow> {
+    Ok(RecordDigestRow {
+        id: row.get(0)?,
+        scope: row.get(1)?,
+        kind: row.get(2)?,
+        title: row.get(3)?,
+        content: row.get(4)?,
+        importance: row.get(5)?,
+        source: row.get(6)?,
+        author: row.get(7)?,
+        commit_sha: row.get(8)?,
+        date: row.get(9)?,
+        tags: row.get(10)?,
+        fact_key: row.get(11)?,
+        valid_from: row.get(12)?,
+        declared_valid_until: row.get(13)?,
+        sealed_digest: row.get(14)?,
+    })
+}
+
+fn record_digest_row_from_external(row: &ExternalDecision) -> RecordDigestRow {
+    RecordDigestRow {
+        id: row.id.clone(),
+        scope: row.scope.clone(),
+        kind: row.kind.clone(),
+        title: row.title.clone(),
+        content: row.content.clone(),
+        importance: row.importance.clamp(0.0, 1.0),
+        source: row.source.clone(),
+        author: row.author.clone(),
+        commit_sha: String::new(),
+        date: row.date.clone(),
+        tags: row.tags.clone(),
+        fact_key: row.fact_key.clone(),
+        valid_from: row.valid_from.clone(),
+        declared_valid_until: row.valid_until.clone(),
+        sealed_digest: None,
+    }
+}
+
+fn ensure_exact_record_replay(
+    existing: &RecordDigestRow,
+    candidate: &RecordDigestRow,
+) -> Result<()> {
+    let stored_digest = record_digest_v1(existing)?;
+    let candidate_digest = record_digest_v1(candidate)?;
+    if existing.sealed_digest.as_deref() != Some(stored_digest.as_str())
+        || existing.sealed_digest.as_deref() != Some(candidate_digest.as_str())
+    {
+        return Err(RecordIdentityConflict.into());
+    }
+    Ok(())
+}
+
+struct PendingRetirement {
+    retirement_at: String,
+    expected_valid_from: Option<String>,
+    expected_valid_until: Option<String>,
+}
+
+fn pending_retirement_time_on(
+    conn: &Connection,
+    id: &str,
+    scope: &str,
+    successor_id: &str,
+    requested_epoch: i64,
+) -> Result<Option<PendingRetirement>> {
+    let state: Option<(Option<String>, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT valid_from,superseded_by,valid_until
+             FROM decisions WHERE id=?1 AND scope=?2",
+            params![id, scope],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((valid_from, superseded_by, valid_until)) = state else {
+        return Err(SupersessionTargetNotFound.into());
+    };
+    if superseded_by.as_deref() == Some(successor_id) {
+        return Ok(None);
+    }
+    if superseded_by.is_some() {
+        return Err(SupersessionConflict.into());
+    }
+    ensure_acyclic_retirement_on(conn, successor_id, id, scope)?;
+    let retirement_epoch = match valid_from.as_deref() {
+        Some(value) => {
+            let from = iso_to_epoch(value).ok_or(CurrentRecordErrorCode::InvalidTemporalData)?;
+            let after_from = from
+                .checked_add(1)
+                .ok_or(CurrentRecordErrorCode::InvalidTemporalData)?;
+            requested_epoch.max(after_from)
+        }
+        None => requested_epoch,
+    };
+    let retirement_at = epoch_to_iso(retirement_epoch);
+    if iso_to_epoch(&retirement_at) != Some(retirement_epoch) {
+        return Err(CurrentRecordErrorCode::InvalidTemporalData.into());
+    }
+    Ok(Some(PendingRetirement {
+        retirement_at,
+        expected_valid_from: valid_from,
+        expected_valid_until: valid_until,
+    }))
+}
+
+fn ensure_acyclic_retirement_on(
+    conn: &Connection,
+    successor_id: &str,
+    predecessor_id: &str,
+    scope: &str,
+) -> Result<()> {
+    if successor_id == predecessor_id {
+        return Err(SupersessionCycle.into());
+    }
+
+    let mut cursor = successor_id.to_owned();
+    let mut seen = std::collections::HashSet::new();
+    for depth in 0..MAX_SUPERSESSION_CHAIN {
+        if cursor == predecessor_id || !seen.insert(cursor.clone()) {
+            return Err(SupersessionCycle.into());
+        }
+        let next: Option<Option<Vec<u8>>> = conn
+            .query_row(
+                "SELECT CAST(superseded_by AS BLOB)
+                 FROM decisions WHERE id=?1 AND scope=?2",
+                params![cursor, scope],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(next) = next else {
+            if depth == 0 {
+                return Ok(());
+            }
+            return Err(SupersessionCycle.into());
+        };
+        if depth + 1 >= MAX_SUPERSESSION_CHAIN {
+            return Err(SupersessionCycle.into());
+        }
+        let Some(next) = next else {
+            return Ok(());
+        };
+        let next = String::from_utf8(next).map_err(|_| SupersessionCycle)?;
+        if next.is_empty() {
+            return Ok(());
+        }
+        cursor = next;
+    }
+    Err(SupersessionCycle.into())
+}
+
+fn record_digest_v1(row: &RecordDigestRow) -> Result<String> {
+    anyhow::ensure!(row.importance.is_finite(), "importance must be finite");
+    let mut canonical = Vec::new();
+    append_required(
+        &mut canonical,
+        "contract",
+        RECORD_DIGEST_CONTRACT.as_bytes(),
+    );
+    append_required(&mut canonical, "repository_scope", row.scope.as_bytes());
+    append_required(&mut canonical, "record_id", row.id.as_bytes());
+    append_required(&mut canonical, "kind", row.kind.as_bytes());
+    append_required(&mut canonical, "title", row.title.as_bytes());
+    append_required(&mut canonical, "content", row.content.as_bytes());
+    let importance = if row.importance == 0.0 {
+        0.0
+    } else {
+        row.importance
+    };
+    append_required(
+        &mut canonical,
+        "importance_f64_be",
+        &importance.to_bits().to_be_bytes(),
+    );
+    append_required(&mut canonical, "source", row.source.as_bytes());
+    append_required(&mut canonical, "author", row.author.as_bytes());
+    append_required(&mut canonical, "commit_sha", row.commit_sha.as_bytes());
+    append_required(&mut canonical, "observed_at", row.date.as_bytes());
+    append_tags(&mut canonical, row.tags.as_deref())?;
+    append_optional(&mut canonical, "fact_key", row.fact_key.as_deref());
+    append_optional(
+        &mut canonical,
+        "declared_valid_from",
+        row.valid_from.as_deref(),
+    );
+    append_optional(
+        &mut canonical,
+        "declared_valid_until",
+        row.declared_valid_until.as_deref(),
+    );
+    Ok(sha256_hex(&canonical))
+}
+
+fn append_tags(canonical: &mut Vec<u8>, raw: Option<&str>) -> Result<()> {
+    append_required(canonical, "tags", &[]);
+    match raw {
+        None => canonical.push(0),
+        Some(raw) => {
+            canonical.push(1);
+            let mut tags: Vec<String> =
+                serde_json::from_str(raw).context("tags must be a JSON array")?;
+            tags.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+            canonical.extend_from_slice(&u64::try_from(tags.len())?.to_be_bytes());
+            for tag in tags {
+                canonical.extend_from_slice(&u64::try_from(tag.len())?.to_be_bytes());
+                canonical.extend_from_slice(tag.as_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_required(canonical: &mut Vec<u8>, name: &str, value: &[u8]) {
+    canonical.extend_from_slice(&(name.len() as u64).to_be_bytes());
+    canonical.extend_from_slice(name.as_bytes());
+    canonical.push(1);
+    canonical.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    canonical.extend_from_slice(value);
+}
+
+fn append_optional(canonical: &mut Vec<u8>, name: &str, value: Option<&str>) {
+    canonical.extend_from_slice(&(name.len() as u64).to_be_bytes());
+    canonical.extend_from_slice(name.as_bytes());
+    match value {
+        None => canonical.push(0),
+        Some(value) => {
+            canonical.push(1);
+            canonical.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            canonical.extend_from_slice(value.as_bytes());
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn scoped_current_resolution(read: CurrentEvidenceRead) -> ScopedCurrentRecordResolution {
+    match read.resolution {
+        CurrentRecordResolution::Ok {
+            contract: _,
+            as_of,
+            requested_id,
+            current_id,
+            record,
+            git_refs,
+            supersession_chain,
+        } => match read.identity {
+            Some(evidence_identity) => ScopedCurrentRecordResolution::Ok {
+                contract: SCOPED_CURRENT_EVIDENCE_CONTRACT,
+                as_of,
+                requested_id,
+                current_id,
+                record,
+                git_refs,
+                supersession_chain,
+                evidence_identity,
+            },
+            None => ScopedCurrentRecordResolution::Error {
+                contract: SCOPED_CURRENT_EVIDENCE_CONTRACT,
+                as_of,
+                requested_id,
+                code: ScopedCurrentEvidenceErrorCode::IdentityConflict,
+                message: "current record identity conflicts with its sealed evidence".to_owned(),
+                retryable: false,
+            },
+        },
+        CurrentRecordResolution::Error {
+            contract: _,
+            as_of,
+            requested_id,
+            code,
+            message,
+            retryable,
+        } => ScopedCurrentRecordResolution::Error {
+            contract: SCOPED_CURRENT_EVIDENCE_CONTRACT,
+            as_of,
+            requested_id,
+            code: match code {
+                CurrentRecordErrorCode::NotFound => ScopedCurrentEvidenceErrorCode::NotFound,
+                CurrentRecordErrorCode::NotYetValid => ScopedCurrentEvidenceErrorCode::NotYetValid,
+                CurrentRecordErrorCode::ExpiredWithoutSuccessor => {
+                    ScopedCurrentEvidenceErrorCode::ExpiredWithoutSuccessor
+                }
+                CurrentRecordErrorCode::BrokenChain => ScopedCurrentEvidenceErrorCode::BrokenChain,
+                CurrentRecordErrorCode::Cycle => ScopedCurrentEvidenceErrorCode::Cycle,
+                CurrentRecordErrorCode::TraversalLimit => {
+                    ScopedCurrentEvidenceErrorCode::TraversalLimit
+                }
+                CurrentRecordErrorCode::InvalidTemporalData => {
+                    ScopedCurrentEvidenceErrorCode::InvalidTemporalData
+                }
+            },
+            message,
+            retryable,
+        },
     }
 }
 
@@ -2027,17 +3549,52 @@ fn now_epoch() -> i64 {
 
 fn iso_to_epoch(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() < 19 {
+    if b.len() > MAX_TEMPORAL_VALUE_BYTES {
         return None;
     }
-    let n = |i: usize| (b[i] as i64) - 48;
+    let canonical_suffix = match b.len() {
+        20 => b[19] == b'Z',
+        22.. => {
+            b[19] == b'.'
+                && b.last() == Some(&b'Z')
+                && b[20..b.len() - 1].iter().all(u8::is_ascii_digit)
+        }
+        _ => false,
+    };
+    if !canonical_suffix
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    const DIGIT_POSITIONS: [usize; 14] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    if !DIGIT_POSITIONS
+        .iter()
+        .all(|position| b[*position].is_ascii_digit())
+    {
+        return None;
+    }
+    let n = |i: usize| i64::from(b[i] - b'0');
     let y = n(0) * 1000 + n(1) * 100 + n(2) * 10 + n(3);
     let mo = n(5) * 10 + n(6);
     let d = n(8) * 10 + n(9);
     let h = n(11) * 10 + n(12);
     let mi = n(14) * 10 + n(15);
     let se = n(17) * 10 + n(18);
-    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || h > 23 || mi > 59 || se > 59 {
+        return None;
+    }
+    let leap_year = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days_in_month = match mo {
+        2 if leap_year => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=days_in_month).contains(&d) {
         return None;
     }
     let days = days_from_civil(y, mo as u32, d as u32);
@@ -2156,7 +3713,12 @@ mod tests {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("open-why-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        Store::open_with_embedder(&dir.join("t.db"), None).unwrap()
+        Store::open_with_embedder_and_store_instance_id(
+            &dir.join("t.db"),
+            None,
+            &format!("provider:test:{n}"),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2372,6 +3934,739 @@ mod tests {
     }
 
     #[test]
+    fn exact_capture_replay_completes_every_requested_supersession_mode() {
+        let store = temp_store();
+
+        store
+            .import_external(&[history_row(
+                "generated-old",
+                None,
+                "global",
+                "generated predecessor",
+            )])
+            .unwrap();
+        let generated = decision("generated successor", "stable body", 0.5, None);
+        let generated_id = store.capture(&generated, "global", None).unwrap();
+        let generated_digest = Store::record_digest_row_by_id_on(&store.conn, &generated_id)
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+        assert_eq!(
+            store
+                .capture(&generated, "global", Some("generated-old"))
+                .unwrap(),
+            generated_id
+        );
+
+        store
+            .import_external(&[history_row(
+                "explicit-old",
+                None,
+                "global",
+                "explicit predecessor",
+            )])
+            .unwrap();
+        let explicit = decision("explicit successor", "stable body", 0.5, None);
+        store
+            .capture_external(
+                &explicit,
+                "global",
+                "explicit-new",
+                Some("2026-03-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let explicit_digest = Store::record_digest_row_by_id_on(&store.conn, "explicit-new")
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+        store
+            .capture_external(
+                &explicit,
+                "global",
+                "explicit-new",
+                Some("2026-03-01T00:00:00Z"),
+                None,
+                Some("explicit-old"),
+            )
+            .unwrap();
+
+        let keyed = decision("keyed successor", "stable body", 0.5, None);
+        store
+            .capture_external(
+                &keyed,
+                "global",
+                "keyed-new",
+                Some("2026-03-01T00:00:00Z"),
+                Some("shared-key"),
+                None,
+            )
+            .unwrap();
+        let keyed_digest = Store::record_digest_row_by_id_on(&store.conn, "keyed-new")
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+        let mut keyed_old = history_row("keyed-old", None, "global", "keyed predecessor");
+        keyed_old.title = "different title".to_owned();
+        keyed_old.fact_key = Some("shared-key".to_owned());
+        store.import_external(&[keyed_old]).unwrap();
+        store
+            .capture_external(
+                &keyed,
+                "global",
+                "keyed-new",
+                Some("2026-03-01T00:00:00Z"),
+                Some("shared-key"),
+                None,
+            )
+            .unwrap();
+
+        let titled = decision("shared title", "stable body", 0.5, None);
+        store
+            .capture_external(
+                &titled,
+                "global",
+                "titled-new",
+                Some("2026-03-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let titled_digest = Store::record_digest_row_by_id_on(&store.conn, "titled-new")
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+        let mut titled_old = history_row("titled-old", None, "global", "title predecessor");
+        titled_old.title = "shared title".to_owned();
+        store.import_external(&[titled_old]).unwrap();
+        store
+            .capture_external(
+                &titled,
+                "global",
+                "titled-new",
+                Some("2026-03-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        for (old, successor) in [
+            ("generated-old", generated_id.as_str()),
+            ("explicit-old", "explicit-new"),
+            ("keyed-old", "keyed-new"),
+            ("titled-old", "titled-new"),
+        ] {
+            let actual: Option<String> = store
+                .conn
+                .query_row(
+                    "SELECT superseded_by FROM decisions WHERE id=?1",
+                    [old],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual.as_deref(), Some(successor), "replay mode {old}");
+        }
+        for (id, before) in [
+            (generated_id.as_str(), generated_digest),
+            ("explicit-new", explicit_digest),
+            ("keyed-new", keyed_digest),
+            ("titled-new", titled_digest),
+        ] {
+            assert_eq!(
+                Store::record_digest_row_by_id_on(&store.conn, id)
+                    .unwrap()
+                    .unwrap()
+                    .sealed_digest,
+                before,
+                "replay rotated the sealed digest for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn conflicting_external_capture_fails_before_any_supersession_effect() {
+        let store = temp_store();
+        let original = decision("shared conflict title", "sealed body", 0.5, None);
+        store
+            .capture_external(
+                &original,
+                "global",
+                "sealed-new",
+                Some("2026-03-01T00:00:00Z"),
+                Some("shared-conflict-key"),
+                None,
+            )
+            .unwrap();
+        let sealed_before = Store::record_digest_row_by_id_on(&store.conn, "sealed-new")
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+
+        let explicit_old = history_row("conflict-explicit-old", None, "global", "explicit");
+        let mut keyed_old = history_row("conflict-keyed-old", None, "global", "keyed");
+        keyed_old.title = "different conflict title".to_owned();
+        keyed_old.fact_key = Some("shared-conflict-key".to_owned());
+        let mut titled_old = history_row("conflict-titled-old", None, "global", "titled");
+        titled_old.title = "shared conflict title".to_owned();
+        store
+            .import_external(&[explicit_old, keyed_old, titled_old])
+            .unwrap();
+
+        let mut conflict = original;
+        conflict.body = "changed immutable body".to_owned();
+        let error = store
+            .capture_external(
+                &conflict,
+                "global",
+                "sealed-new",
+                Some("2026-03-01T00:00:00Z"),
+                Some("shared-conflict-key"),
+                Some("conflict-explicit-old"),
+            )
+            .unwrap_err();
+        assert!(error.downcast_ref::<RecordIdentityConflict>().is_some());
+
+        for id in [
+            "conflict-explicit-old",
+            "conflict-keyed-old",
+            "conflict-titled-old",
+        ] {
+            let successor: Option<String> = store
+                .conn
+                .query_row(
+                    "SELECT superseded_by FROM decisions WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(successor, None, "conflict changed relation for {id}");
+        }
+        assert_eq!(
+            Store::record_digest_row_by_id_on(&store.conn, "sealed-new")
+                .unwrap()
+                .unwrap()
+                .sealed_digest,
+            sealed_before
+        );
+    }
+
+    #[test]
+    fn same_tick_exact_replay_keeps_a_positive_resolvable_interval() {
+        let store = temp_store();
+        let (old_id, new_id, successor) = (0..32)
+            .find_map(|attempt| {
+                let old_id = format!("same-tick-old-{attempt}");
+                let new_id = format!("same-tick-new-{attempt}");
+                let old = decision(&format!("same tick old {attempt}"), "old body", 0.5, None);
+                let successor =
+                    decision(&format!("same tick new {attempt}"), "new body", 0.5, None);
+                store
+                    .capture_external(&old, "global", &old_id, None, None, None)
+                    .unwrap();
+                store
+                    .capture_external(&successor, "global", &new_id, None, None, None)
+                    .unwrap();
+                let ticks: (Option<String>, Option<String>) = store
+                    .conn
+                    .query_row(
+                        "SELECT
+                           (SELECT valid_from FROM decisions WHERE id=?1),
+                           (SELECT valid_from FROM decisions WHERE id=?2)",
+                        params![old_id, new_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                (ticks.0 == ticks.1).then_some((old_id, new_id, successor))
+            })
+            .expect("32 immediate capture pairs must include one production-clock tick pair");
+        let digest_before = Store::record_digest_row_by_id_on(&store.conn, &new_id)
+            .unwrap()
+            .unwrap()
+            .sealed_digest;
+
+        store
+            .capture_external(&successor, "global", &new_id, None, None, Some(&old_id))
+            .unwrap();
+        let first_relation: (Option<String>, Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT superseded_by,valid_from,valid_until FROM decisions WHERE id=?1",
+                [&old_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        store
+            .capture_external(&successor, "global", &new_id, None, None, Some(&old_id))
+            .unwrap();
+        let second_relation: (Option<String>, Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT superseded_by,valid_from,valid_until FROM decisions WHERE id=?1",
+                [&old_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(first_relation, second_relation);
+        assert_eq!(first_relation.0.as_deref(), Some(new_id.as_str()));
+        assert!(
+            iso_to_epoch(first_relation.2.as_deref().unwrap()).unwrap()
+                > iso_to_epoch(first_relation.1.as_deref().unwrap()).unwrap()
+        );
+        assert_eq!(
+            Store::record_digest_row_by_id_on(&store.conn, &new_id)
+                .unwrap()
+                .unwrap()
+                .sealed_digest,
+            digest_before
+        );
+        assert!(matches!(
+            store
+                .get_current_evidence_in_scope(&old_id, "global")
+                .unwrap(),
+            ScopedCurrentRecordResolution::Ok {
+                current_id,
+                ref record,
+                ..
+            } if current_id == new_id && record.id == new_id
+        ));
+    }
+
+    #[test]
+    fn iso_to_epoch_accepts_only_canonical_utc_timestamps() {
+        for valid in [
+            "1970-01-01T00:00:00Z",
+            "2000-02-29T23:59:59Z",
+            "2026-09-03T12:34:56.1Z",
+            "2026-09-03T12:34:56.123456789Z",
+            "9999-12-31T23:59:59Z",
+        ] {
+            assert!(iso_to_epoch(valid).is_some(), "rejected canonical {valid}");
+        }
+        let boundary = format!("2026-09-03T12:34:56.{}Z", "1".repeat(107));
+        let over_bound = format!("2026-09-03T12:34:56.{}Z", "1".repeat(108));
+        assert_eq!(boundary.len(), MAX_TEMPORAL_VALUE_BYTES);
+        assert!(iso_to_epoch(&boundary).is_some());
+        assert_eq!(over_bound.len(), MAX_TEMPORAL_VALUE_BYTES + 1);
+        assert!(iso_to_epoch(&over_bound).is_none());
+        for invalid in [
+            "2026X01Y01Q00R00S00Z",
+            "2026-01-01 00:00:00Z",
+            "2026-01-01T00:00:00z",
+            "2026-01-01T00:00:00Ztrailing",
+            "2026-01-01T00:00:00.Z",
+            "2026-01-01T00:00:00.1Ztrailing",
+            "2026-01-01T24:00:00Z",
+            "2026-01-01T00:60:00Z",
+            "2026-01-01T00:00:60Z",
+            "2026-02-29T00:00:00Z",
+            "2024-02-30T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "10000-01-01T00:00:00Z",
+        ] {
+            assert!(iso_to_epoch(invalid).is_none(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn completed_exact_relation_replay_skips_malformed_predecessor_time() {
+        let store = temp_store();
+        let successor = decision("completed successor", "successor body", 0.5, None);
+        store
+            .capture_external(
+                &successor,
+                "global",
+                "completed-new",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let mut predecessor = history_row(
+            "completed-old",
+            Some("completed-new"),
+            "global",
+            "predecessor body",
+        );
+        predecessor.title = "completed predecessor".to_owned();
+        predecessor.valid_from = Some("legacy-not-a-time".to_owned());
+        predecessor.git_refs.clear();
+        store.import_external(&[predecessor]).unwrap();
+        let snapshot = || {
+            store
+                .conn
+                .query_row(
+                    "SELECT superseded_by,valid_from,valid_until,record_digest_v1,
+                            (SELECT record_digest_v1 FROM decisions WHERE id='completed-new'),
+                            (SELECT count(*) FROM decisions),
+                            (SELECT count(*) FROM decision_git_refs)
+                     FROM decisions WHERE id='completed-old'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let before = snapshot();
+
+        store
+            .capture_external(
+                &successor,
+                "global",
+                "completed-new",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                Some("completed-old"),
+            )
+            .unwrap();
+
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn completed_different_relation_returns_typed_conflict_before_time_parsing() {
+        let store = temp_store();
+        let wanted = decision("wanted successor", "wanted body", 0.5, None);
+        let other = decision("other successor", "other body", 0.5, None);
+        store
+            .capture_external(
+                &other,
+                "global",
+                "other-new",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let mut predecessor = history_row(
+            "conflicting-old",
+            Some("other-new"),
+            "global",
+            "predecessor body",
+        );
+        predecessor.title = "conflicting predecessor".to_owned();
+        predecessor.valid_from = Some("legacy-not-a-time".to_owned());
+        predecessor.git_refs.clear();
+        store.import_external(&[predecessor]).unwrap();
+        let snapshot = || {
+            let decisions: Vec<(String, Option<String>, Option<String>, String)> = store
+                .conn
+                .prepare(
+                    "SELECT id,superseded_by,valid_until,record_digest_v1
+                     FROM decisions ORDER BY id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let relation_count: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM decision_git_refs", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            (decisions, relation_count)
+        };
+        let before = snapshot();
+
+        let error = store
+            .capture_external(
+                &wanted,
+                "global",
+                "wanted-new",
+                Some("2026-03-01T00:00:00Z"),
+                None,
+                Some("conflicting-old"),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<SupersessionConflict>(),
+            Some(&SupersessionConflict)
+        );
+        assert_eq!(
+            error.to_string(),
+            "supersession_conflict: predecessor already names a different successor"
+        );
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn missing_supersession_target_fails_typed_before_either_capture_inserts() {
+        let store = temp_store();
+        let snapshot = || {
+            let decision_count: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM decisions", [], |row| row.get(0))
+                .unwrap();
+            let relation_count: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM decision_git_refs", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let fts_count: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM decisions_fts", [], |row| row.get(0))
+                .unwrap();
+            (decision_count, relation_count, fts_count)
+        };
+        let before = snapshot();
+        let decision = decision("missing target", "must not persist", 0.5, None);
+
+        for error in [
+            store
+                .capture_external(
+                    &decision,
+                    "global",
+                    "missing-target-external",
+                    Some("2026-03-01T00:00:00Z"),
+                    None,
+                    Some("absent-old"),
+                )
+                .unwrap_err(),
+            store
+                .capture(&decision, "global", Some("absent-old"))
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                error.downcast_ref::<SupersessionTargetNotFound>(),
+                Some(&SupersessionTargetNotFound)
+            );
+            assert_eq!(
+                error.to_string(),
+                "supersession_target_not_found: predecessor was not found"
+            );
+            assert_eq!(snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn changed_relation_during_apply_rolls_back_candidate_and_all_retirements() {
+        let store = temp_store();
+        let mut explicit = history_row("race-a-explicit", None, "global", "explicit body");
+        explicit.title = "different title".to_owned();
+        explicit.git_refs.clear();
+        let mut automatic = history_row("race-z-automatic", None, "global", "automatic body");
+        automatic.title = "race successor".to_owned();
+        automatic.git_refs.clear();
+        store.import_external(&[explicit, automatic]).unwrap();
+        let snapshot = || {
+            let decisions: Vec<(String, Option<String>, Option<String>, String)> = store
+                .conn
+                .prepare(
+                    "SELECT id,superseded_by,valid_until,record_digest_v1
+                     FROM decisions ORDER BY id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let fts: Vec<String> = store
+                .conn
+                .prepare("SELECT title FROM decisions_fts ORDER BY title")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let relation_count: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM decision_git_refs", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            (decisions, fts, relation_count)
+        };
+        let before = snapshot();
+        let successor = decision("race successor", "candidate body", 0.5, None);
+
+        let error = store
+            .capture_external_with_pre_retirement_hook(
+                ExternalCaptureRequest {
+                    decision: &successor,
+                    scope: "global",
+                    id: "race-candidate",
+                    valid_from: Some("2026-03-01T00:00:00Z"),
+                    fact_key: None,
+                    supersedes: Some("race-a-explicit"),
+                },
+                |tx| {
+                    tx.execute(
+                        "UPDATE decisions
+                         SET valid_until='2026-02-01T00:00:00Z'
+                         WHERE id='race-z-automatic'",
+                        [],
+                    )?;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<SupersessionConflict>(),
+            Some(&SupersessionConflict)
+        );
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn automatic_retirement_preflights_all_predecessors_before_effects() {
+        let store = temp_store();
+        let successor = decision("automatic shared title", "successor body", 0.5, None);
+        store
+            .capture_external(
+                &successor,
+                "global",
+                "automatic-new",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let mut valid = history_row("automatic-a-valid", None, "global", "valid predecessor");
+        valid.title = "automatic shared title".to_owned();
+        valid.git_refs.clear();
+        let mut invalid = history_row("automatic-z-invalid", None, "global", "invalid predecessor");
+        invalid.title = "automatic shared title".to_owned();
+        invalid.valid_from = Some("2026X01Y01Q00R00S00Z".to_owned());
+        invalid.git_refs.clear();
+        store.import_external(&[valid, invalid]).unwrap();
+        let snapshot = || {
+            let mut statement = store
+                .conn
+                .prepare(
+                    "SELECT id,superseded_by,valid_from,valid_until,record_digest_v1
+                     FROM decisions ORDER BY id",
+                )
+                .unwrap();
+            let decisions = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            let relations: Vec<(String, String, String)> = store
+                .conn
+                .prepare(
+                    "SELECT decision_id,commit_hash,commit_subject
+                     FROM decision_git_refs ORDER BY decision_id,commit_hash",
+                )
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (decisions, relations)
+        };
+        let before = snapshot();
+
+        let error = store
+            .capture_external(
+                &successor,
+                "global",
+                "automatic-new",
+                Some("2026-02-01T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<CurrentRecordErrorCode>(),
+            Some(&CurrentRecordErrorCode::InvalidTemporalData)
+        );
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn retirement_rejects_out_of_domain_and_malformed_predecessor_time_before_effects() {
+        let store = temp_store();
+        let over_bound = format!("2026-01-01T00:00:00.{}Z", "1".repeat(108));
+        for (label, valid_from, parses) in [
+            ("maximum", "9999-12-31T23:59:59Z".to_owned(), true),
+            ("malformed", "legacy-not-a-time".to_owned(), false),
+            ("noncanonical", "2026X01Y01Q00R00S00Z".to_owned(), false),
+            ("over-bound", over_bound, false),
+        ] {
+            assert_eq!(iso_to_epoch(&valid_from).is_some(), parses);
+            let old_id = format!("domain-old-{label}");
+            let new_id = format!("domain-new-{label}");
+            let mut predecessor = history_row(&old_id, None, "global", "predecessor body");
+            predecessor.title = format!("domain old {label}");
+            predecessor.valid_from = Some(valid_from);
+            predecessor.git_refs.clear();
+            store.import_external(&[predecessor]).unwrap();
+            let successor = decision(&format!("domain new {label}"), "successor body", 0.5, None);
+            let snapshot = || {
+                store
+                    .conn
+                    .query_row(
+                        "SELECT
+                           (SELECT count(*) FROM decisions),
+                           superseded_by,valid_from,valid_until,record_digest_v1,
+                           (SELECT record_digest_v1 FROM decisions WHERE id=?2),
+                           (SELECT count(*) FROM decision_git_refs)
+                         FROM decisions WHERE id=?1",
+                        params![old_id, new_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                                row.get::<_, i64>(6)?,
+                            ))
+                        },
+                    )
+                    .unwrap()
+            };
+            let before = snapshot();
+            let error = store
+                .capture_external(
+                    &successor,
+                    "global",
+                    &new_id,
+                    Some("2026-01-01T00:00:00Z"),
+                    None,
+                    Some(&old_id),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<CurrentRecordErrorCode>(),
+                Some(&CurrentRecordErrorCode::InvalidTemporalData)
+            );
+            assert_eq!(snapshot(), before, "{label} changed stored evidence");
+        }
+    }
+
+    #[test]
     fn current_evidence_resolves_a_stale_link_and_returns_current_git_proof() {
         let store = temp_store();
         store
@@ -2528,17 +4823,10 @@ mod tests {
     fn current_evidence_obeys_validity_instants_and_rejects_bad_stored_time() {
         let store = temp_store();
         let insert = |id: &str, from: &str, until: Option<&str>| {
-            store
-                .conn
-                .execute(
-                    "INSERT INTO decisions
-                     (id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                      valid_from,valid_until,content_digest,source_identity,created_epoch)
-                     VALUES (?1,'decision',?1,'full body',0.5,'synthetic','tester','',
-                             '2026-01-01','scope-a',?2,?3,?1,?1,0)",
-                    params![id, from, until],
-                )
-                .unwrap();
+            let mut row = history_row(id, None, "scope-a", "full body");
+            row.valid_from = Some(from.to_owned());
+            row.valid_until = until.map(str::to_owned);
+            store.import_external(&[row]).unwrap();
         };
         insert("future", "2026-04-01T00:00:00Z", None);
         insert(
@@ -2617,6 +4905,10 @@ mod tests {
             .unwrap();
         store
             .conn
+            .execute_batch("DROP TRIGGER decisions_identity_update_guard;")
+            .unwrap();
+        store
+            .conn
             .execute(
                 "UPDATE decisions
                  SET content=CAST(zeroblob(8388608) AS TEXT), importance=X'FF',
@@ -2679,6 +4971,10 @@ mod tests {
             .unwrap();
         wrong_scope_store
             .conn
+            .execute_batch("DROP TRIGGER decisions_identity_update_guard;")
+            .unwrap();
+        wrong_scope_store
+            .conn
             .execute(
                 "UPDATE decisions
                  SET content=CAST(zeroblob(8388608) AS TEXT), importance=X'FF',
@@ -2717,7 +5013,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("current.db");
-        let store = Store::open_with_embedder(&path, None).unwrap();
+        let store = Store::open_with_embedder_and_store_instance_id(
+            &path,
+            None,
+            &format!("provider:current:{n}"),
+        )
+        .unwrap();
         store
             .conn
             .execute_batch("PRAGMA journal_mode=WAL;")
@@ -2737,30 +5038,40 @@ mod tests {
         let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
 
         let first = store
-            .get_current_evidence_at_with_scope_and_hook("snapshot-root", None, as_of, 64, || {
-                writer.execute_batch(
-                    "BEGIN IMMEDIATE;
+            .get_current_evidence_at_with_scope_and_hook(
+                "snapshot-root",
+                Some("scope-a"),
+                as_of,
+                64,
+                true,
+                || {
+                    writer.execute_batch(
+                        "BEGIN IMMEDIATE;
                          UPDATE decisions SET superseded_by='snapshot-new'
                          WHERE id='snapshot-root';
-                         UPDATE decisions SET content='mutated old body'
-                         WHERE id='snapshot-old';
-                         UPDATE decisions SET content='new current body'
-                         WHERE id='snapshot-new';
                          INSERT INTO decision_git_refs
                          (decision_id,commit_hash,commit_subject)
                          VALUES ('snapshot-new','new-commit','New evidence');
                          COMMIT;",
-                )?;
-                Ok(())
-            })
+                    )?;
+                    Ok(())
+                },
+            )
             .unwrap();
+        assert_eq!(
+            first
+                .identity
+                .as_ref()
+                .map(|identity| identity.record_id.as_str()),
+            Some("snapshot-old")
+        );
         let CurrentRecordResolution::Ok {
             current_id,
             record,
             git_refs,
             supersession_chain,
             ..
-        } = first
+        } = first.resolution
         else {
             panic!("expected old coherent snapshot");
         };
@@ -2771,20 +5082,34 @@ mod tests {
         assert!(!git_refs.iter().any(|item| item.commit_hash == "new-commit"));
 
         let second = store
-            .get_current_evidence_at("snapshot-root", as_of, 64)
+            .get_current_evidence_at_with_scope_and_hook(
+                "snapshot-root",
+                Some("scope-a"),
+                as_of,
+                64,
+                true,
+                || Ok(()),
+            )
             .unwrap();
+        assert_eq!(
+            second
+                .identity
+                .as_ref()
+                .map(|identity| identity.record_id.as_str()),
+            Some("snapshot-new")
+        );
         let CurrentRecordResolution::Ok {
             current_id,
             record,
             git_refs,
             supersession_chain,
             ..
-        } = second
+        } = second.resolution
         else {
             panic!("expected new coherent snapshot");
         };
         assert_eq!(current_id, "snapshot-new");
-        assert_eq!(record.content, "new current body");
+        assert_eq!(record.content, "pending new body");
         assert_eq!(supersession_chain, ["snapshot-root", "snapshot-new"]);
         assert!(git_refs.iter().any(|item| item.commit_hash == "new-commit"));
         assert!(!git_refs.iter().any(|item| item.commit_hash == "old-commit"));
@@ -2930,17 +5255,9 @@ mod tests {
                 history_row("cross-successor", None, "scope-b", "foreign body"),
             ])
             .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO decisions
-                 (id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                  valid_from,content_digest,source_identity,created_epoch)
-                 VALUES ('bad-time','decision','bad time','body',0.5,'synthetic','tester','',
-                         '2026-01-01','scope-a','not-a-time','bad-time','bad-time',0)",
-                [],
-            )
-            .unwrap();
+        let mut bad_time = history_row("bad-time", None, "scope-a", "body");
+        bad_time.valid_from = Some("not-a-time".to_owned());
+        store.import_external(&[bad_time]).unwrap();
         let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
         let code = |resolution| match resolution {
             RationaleHistoryResolution::Error { code, .. } => code,
@@ -2967,11 +5284,8 @@ mod tests {
         let wrong_scope = store
             .get_rationale_history_at("foreign", "scope-a", None, 3, as_of, 64)
             .unwrap();
-        store
-            .conn
-            .execute("DELETE FROM decisions WHERE id='foreign'", [])
-            .unwrap();
-        let same_id_missing = store
+        let empty_store = temp_store();
+        let same_id_missing = empty_store
             .get_rationale_history_at("foreign", "scope-a", None, 3, as_of, 64)
             .unwrap();
         assert_eq!(
@@ -3046,7 +5360,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.db");
-        let store = Store::open_with_embedder(&path, None).unwrap();
+        let store = Store::open_with_embedder_and_store_instance_id(
+            &path,
+            None,
+            &format!("provider:history:{n}"),
+        )
+        .unwrap();
         store
             .conn
             .execute_batch("PRAGMA journal_mode=WAL;")
@@ -3075,11 +5394,6 @@ mod tests {
                     writer.execute(
                         "UPDATE decisions SET superseded_by='snapshot-alt'
                          WHERE id='snapshot-a'",
-                        [],
-                    )?;
-                    writer.execute(
-                        "UPDATE decisions SET content='new successor'
-                         WHERE id='snapshot-b'",
                         [],
                     )?;
                     writer.execute(
@@ -3121,7 +5435,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .content,
-            "new successor"
+            "old successor"
         );
         assert_eq!(store.linked_commits("snapshot-b").unwrap().len(), 2);
 
@@ -3437,7 +5751,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("links.db");
-        let store = Store::open_with_embedder(&path, None).unwrap();
+        let store = Store::open_with_embedder_and_store_instance_id(
+            &path,
+            None,
+            &format!("provider:links:{n}"),
+        )
+        .unwrap();
         store
             .conn
             .execute_batch("PRAGMA journal_mode=WAL;")
@@ -3497,17 +5816,11 @@ mod tests {
     fn active_search_excludes_future_and_expired_temporal_records() {
         let store = temp_store();
         let insert = |id: &str, from: &str, until: Option<&str>| {
-            store
-                .conn
-                .execute(
-                    "INSERT INTO decisions
-                     (id,kind,title,content,importance,source,author,commit_sha,date,scope,
-                      valid_from,valid_until,content_digest,source_identity,created_epoch)
-                     VALUES (?1,'decision','temporal sentinel','temporal sentinel',0.5,
-                             'synthetic','tester','','2026-01-01','scope-a',?2,?3,?1,?1,0)",
-                    params![id, from, until],
-                )
-                .unwrap();
+            let mut row = history_row(id, None, "scope-a", "temporal sentinel");
+            row.title = "temporal sentinel".to_owned();
+            row.valid_from = Some(from.to_owned());
+            row.valid_until = until.map(str::to_owned);
+            store.import_external(&[row]).unwrap();
         };
         insert("current", "2000-01-01T00:00:00Z", None);
         insert("future", "2999-01-01T00:00:00Z", None);
@@ -3553,5 +5866,173 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(drops.len(), 2);
+    }
+
+    #[test]
+    fn record_digest_v1_has_stable_null_unicode_and_float_vectors() {
+        let base = RecordDigestRow {
+            id: "record\0id".to_owned(),
+            scope: "/repo/alpha".to_owned(),
+            kind: "decision".to_owned(),
+            title: "Use SQLite".to_owned(),
+            content: "local-first\nreason".to_owned(),
+            importance: -0.0,
+            source: "capture".to_owned(),
+            author: "agent".to_owned(),
+            commit_sha: "abc123".to_owned(),
+            date: "2026-09-03T12:34:56Z".to_owned(),
+            tags: None,
+            fact_key: None,
+            valid_from: None,
+            declared_valid_until: None,
+            sealed_digest: None,
+        };
+        let mut unicode = base.clone();
+        unicode.id = "记录-β".to_owned();
+        unicode.title = "为什么 SQLite?".to_owned();
+        unicode.importance = 0.125;
+        unicode.tags = Some("[\"β\",\"alpha\",\"\"]".to_owned());
+        unicode.fact_key = Some(String::new());
+        unicode.valid_from = Some("2026-09-03T12:34:56.123Z".to_owned());
+        unicode.declared_valid_until = Some(String::new());
+
+        assert_eq!(
+            (
+                record_digest_v1(&base).unwrap(),
+                record_digest_v1(&unicode).unwrap()
+            ),
+            (
+                "a68e21b2b9e9ed1d5f2ebb0c47390b1c06a927589b8d7ac8e6a3dbafa9412bd7".to_owned(),
+                "e7393a1403bffa15cfb05e72f40e8ba177984adbd39751f7ff9dbf8f50e8efaa".to_owned(),
+            )
+        );
+
+        let mut left = base.clone();
+        left.title = "a\0b".to_owned();
+        left.content = "c".to_owned();
+        let mut right = base;
+        right.title = "a".to_owned();
+        right.content = "b\0c".to_owned();
+        assert_ne!(
+            record_digest_v1(&left).unwrap(),
+            record_digest_v1(&right).unwrap()
+        );
+    }
+
+    #[test]
+    fn migration_failure_rolls_back_every_foundation_effect_and_retries() {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "open-why-migration-rollback-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(LEGACY_SCHEMA_V0_SQL).unwrap();
+        conn.execute_batch(
+            "INSERT INTO decisions
+               (id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                valid_until,content_digest,source_identity,created_epoch)
+             VALUES ('legacy','decision','Legacy','body',0.5,'import','author','',
+                     '2025-01-01','repo-a','2027-01-01','old','legacy',1);",
+        )
+        .unwrap();
+        let schema_snapshot = |conn: &Connection| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema
+                     ORDER BY type,name,tbl_name",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let decisions_snapshot = |conn: &Connection| {
+            conn.query_row(
+                "SELECT hex(CAST(id AS BLOB)),hex(CAST(title AS BLOB)),
+                        hex(CAST(content AS BLOB)),hex(CAST(valid_until AS BLOB))
+                 FROM decisions WHERE id='legacy'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        let fts_snapshot = |conn: &Connection| {
+            conn.query_row(
+                "SELECT count(*),COALESCE(group_concat(rowid || ':' || title,','),'')
+                 FROM decisions_fts",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap()
+        };
+        let schema_before = schema_snapshot(&conn);
+        let decisions_before = decisions_snapshot(&conn);
+        let fts_before = fts_snapshot(&conn);
+        let bytes_before = std::fs::read(&path).unwrap();
+        let sidecars = [
+            PathBuf::from(format!("{}-journal", path.display())),
+            PathBuf::from(format!("{}-wal", path.display())),
+            PathBuf::from(format!("{}-shm", path.display())),
+        ];
+        assert!(sidecars.iter().all(|sidecar| !sidecar.exists()));
+        let store = Store {
+            conn,
+            embedder: None,
+        };
+        let error = store
+            .migrate_with_hook(Some("provider:rollback"), |_| {
+                anyhow::bail!("injected migration crash")
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("injected migration crash"));
+        assert_eq!(schema_snapshot(&store.conn), schema_before);
+        assert_eq!(decisions_snapshot(&store.conn), decisions_before);
+        assert_eq!(fts_snapshot(&store.conn), fts_before);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+        assert!(sidecars.iter().all(|sidecar| !sidecar.exists()));
+        let version: u32 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 0);
+        assert!(!object_exists(&store.conn, "table", "open_why_metadata").unwrap());
+        assert!(!object_exists(&store.conn, "table", "open_why_migrations").unwrap());
+        assert!(matches!(
+            inspect_connection(&store.conn),
+            StoreCompatibility::MigrationRequired { .. }
+        ));
+        store
+            .migrate_with_provider_identity(Some("provider:rollback"))
+            .unwrap();
+        let first = store.store_identity().unwrap();
+        store
+            .migrate_with_provider_identity(Some("provider:rollback"))
+            .unwrap();
+        assert_eq!(store.store_identity().unwrap(), first);
+        assert!(matches!(
+            inspect_store(&path).unwrap(),
+            StoreCompatibility::Compatible { identity } if identity == first
+        ));
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

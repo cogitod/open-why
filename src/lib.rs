@@ -37,12 +37,19 @@ pub mod search;
 pub mod store;
 
 // Convenience re-exports for the library surface.
-pub use db::{default_path, RankExplanation, Store};
+pub use db::{default_path, inspect_store, RankExplanation, Store};
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
 pub use store::{
     CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
-    CurrentRecordResolution, Decision, ExternalDecision, GitRef, RationaleHistoryErrorCode,
-    RationaleHistoryRecord, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
-    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
-    MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
+    CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,
+    EvidenceIdentityResolution, ExternalDecision, GitRef, RationaleHistoryErrorCode,
+    RationaleHistoryRecord, RationaleHistoryResolution, Record, RecordIdentityConflict,
+    ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution, StoreCompatibility,
+    StoreCompatibilityErrorCode, StoreIdentity, StoreIdentityBindingError,
+    StoreIdentityBindingErrorCode, SupersessionConflict, SupersessionCycle,
+    SupersessionTargetNotFound, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
+    EVIDENCE_IDENTITY_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
+    MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT,
+    RATIONALE_IMPORT_CONTRACT, RECORD_DIGEST_CONTRACT, SCOPED_CURRENT_EVIDENCE_CONTRACT,
+    STORE_SCHEMA_FAMILY, STORE_SCHEMA_VERSION,
 };

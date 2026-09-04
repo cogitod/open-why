@@ -1,8 +1,10 @@
 use crate::store::{
-    self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordResolution, ExternalDecision,
-    RationaleHistoryErrorCode, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
+    self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
+    CurrentRecordResolution, ExternalDecision, RationaleHistoryErrorCode,
+    RationaleHistoryResolution, Record, RecordIdentityConflict, COMMIT_LINKS_CONTRACT,
     CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
-    MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
+    MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT,
+    RATIONALE_IMPORT_CONTRACT,
 };
 use crate::{db, miner};
 use anyhow::Result;
@@ -15,6 +17,7 @@ const MCP_CONTRACTS: &[&str] = &[
     CURRENT_RATIONALE_CONTRACT,
     RATIONALE_HISTORY_CONTRACT,
     COMMIT_LINKS_CONTRACT,
+    RATIONALE_IMPORT_CONTRACT,
 ];
 const MAX_QUERY_BYTES: usize = 4 * 1024;
 const MAX_RESULT_COUNT: usize = 100;
@@ -152,15 +155,15 @@ fn import_row_schema() -> Value {
             "importance":{"type":"number","minimum":0,"maximum":1},
             "source":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
             "author":{"type":"string","maxLength":MAX_TITLE_BYTES},
-            "date":{"type":"string","maxLength":128},
-            "updated_at":{"type":["string","null"],"maxLength":128},
+            "date":{"type":"string","maxLength":MAX_TEMPORAL_VALUE_BYTES},
+            "updated_at":{"type":["string","null"],"maxLength":MAX_TEMPORAL_VALUE_BYTES},
             "accessed_count":{"type":["integer","null"]},
             "times_injected":{"type":["integer","null"]},
             "effectiveness":{"type":["number","null"],"minimum":0,"maximum":1},
             "tags":{"type":["string","null"],"maxLength":MAX_BODY_BYTES},
             "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
-            "valid_from":{"type":["string","null"],"maxLength":128},
-            "valid_until":{"type":["string","null"],"maxLength":128},
+            "valid_from":{"type":["string","null"],"maxLength":MAX_TEMPORAL_VALUE_BYTES},
+            "valid_until":{"type":["string","null"],"maxLength":MAX_TEMPORAL_VALUE_BYTES},
             "superseded_by":{"type":["string","null"],"maxLength":MAX_ID_BYTES},
             "fact_key":{"type":["string","null"],"maxLength":MAX_ID_BYTES},
             "git_refs":{"type":"array","maxItems":MAX_GIT_REFS,"items":object_schema(
@@ -196,7 +199,7 @@ fn input_schema(kind: ToolKind) -> Value {
                 "importance":{"type":"number","minimum":0,"maximum":1},
                 "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
                 "id":{"type":"string","maxLength":MAX_ID_BYTES},
-                "valid_from":{"type":"string","maxLength":128},
+                "valid_from":{"type":"string","maxLength":MAX_TEMPORAL_VALUE_BYTES},
                 "fact_key":{"type":"string","maxLength":MAX_ID_BYTES},
                 "supersedes":{"type":"string","maxLength":MAX_ID_BYTES}
             }),
@@ -268,11 +271,15 @@ fn registry_tools() -> Vec<Value> {
     TOOL_SPECS
         .iter()
         .map(|spec| {
-            json!({
+            let mut tool = json!({
                 "name": spec.name,
                 "description": spec.description,
                 "inputSchema": input_schema(spec.kind)
-            })
+            });
+            if spec.kind == ToolKind::Import {
+                tool["_meta"] = json!({"contract":RATIONALE_IMPORT_CONTRACT});
+            }
+            tool
         })
         .collect()
 }
@@ -684,7 +691,7 @@ fn capture_tool(store: &db::Store, args: &Value) -> ToolResult {
             })?,
     };
     let id = optional_string(args, "id", MAX_ID_BYTES)?;
-    let valid_from = optional_string(args, "valid_from", 128)?;
+    let valid_from = optional_string(args, "valid_from", MAX_TEMPORAL_VALUE_BYTES)?;
     let fact_key = optional_string(args, "fact_key", MAX_ID_BYTES)?;
     let supersedes = optional_string(args, "supersedes", MAX_ID_BYTES)?;
     if let Some(valid_from) = valid_from {
@@ -721,7 +728,18 @@ fn capture_tool(store: &db::Store, args: &Value) -> ToolResult {
         Some(id) => store.capture_external(&decision, scope, id, valid_from, fact_key, supersedes),
         None => store.capture(&decision, scope, supersedes),
     }
-    .map_err(ToolError::internal)?;
+    .map_err(|error| {
+        if error.downcast_ref::<CurrentRecordErrorCode>()
+            == Some(&CurrentRecordErrorCode::InvalidTemporalData)
+        {
+            ToolError::new(
+                "invalid_arguments",
+                "supersession predecessor has invalid temporal data",
+            )
+        } else {
+            ToolError::internal(error)
+        }
+    })?;
     Ok(json!({"status":"ok","id":id,"scope":scope}))
 }
 
@@ -746,7 +764,7 @@ fn validate_import_row(
         ("content", row.content.as_str(), MAX_BODY_BYTES),
         ("source", row.source.as_str(), MAX_AUTHORITY_BYTES),
         ("author", row.author.as_str(), MAX_TITLE_BYTES),
-        ("date", row.date.as_str(), 128),
+        ("date", row.date.as_str(), MAX_TEMPORAL_VALUE_BYTES),
     ] {
         if value.len() > limit {
             return Err(ToolError::new(
@@ -786,10 +804,22 @@ fn validate_import_row(
         ));
     }
     for (field, value, limit) in [
-        ("updated_at", row.updated_at.as_deref(), 128),
+        (
+            "updated_at",
+            row.updated_at.as_deref(),
+            MAX_TEMPORAL_VALUE_BYTES,
+        ),
         ("tags", row.tags.as_deref(), MAX_BODY_BYTES),
-        ("valid_from", row.valid_from.as_deref(), 128),
-        ("valid_until", row.valid_until.as_deref(), 128),
+        (
+            "valid_from",
+            row.valid_from.as_deref(),
+            MAX_TEMPORAL_VALUE_BYTES,
+        ),
+        (
+            "valid_until",
+            row.valid_until.as_deref(),
+            MAX_TEMPORAL_VALUE_BYTES,
+        ),
         ("superseded_by", row.superseded_by.as_deref(), MAX_ID_BYTES),
         ("fact_key", row.fact_key.as_deref(), MAX_ID_BYTES),
     ] {
@@ -923,8 +953,25 @@ fn import_tool(store: &db::Store, args: &Value) -> ToolResult {
     for row in &rows {
         validate_import_row(store, row, scope)?;
     }
-    let imported = store.import_external(&rows).map_err(ToolError::internal)?;
-    Ok(json!({"status":"ok","scope":scope,"imported":imported}))
+    let imported = store.import_external(&rows).map_err(|error| {
+        if error.downcast_ref::<RecordIdentityConflict>().is_some() {
+            ToolError::resolution(json!({
+                "contract":RATIONALE_IMPORT_CONTRACT,
+                "status":"error",
+                "code":"identity_conflict",
+                "message":"record identity conflicts with sealed evidence",
+                "retryable":false
+            }))
+        } else {
+            ToolError::internal(error)
+        }
+    })?;
+    Ok(json!({
+        "contract":RATIONALE_IMPORT_CONTRACT,
+        "status":"ok",
+        "scope":scope,
+        "imported":imported
+    }))
 }
 
 fn search_tool(store: &db::Store, args: &Value) -> ToolResult {
@@ -1170,7 +1217,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        db::Store::open(&path).unwrap()
+        db::Store::open_with_store_instance_id(&path, "provider:mcp-unit").unwrap()
     }
 
     #[test]
@@ -1189,6 +1236,69 @@ mod tests {
         }
         let unknown = dispatch_tool(&store, "open-why_hidden", &json!({}), 0).unwrap_err();
         assert_eq!(unknown.payload["code"], "unknown_tool");
+    }
+
+    #[test]
+    fn temporal_schema_and_runtime_share_the_canonical_byte_limit() {
+        let expected = json!(MAX_TEMPORAL_VALUE_BYTES);
+        let capture = input_schema(ToolKind::Capture);
+        assert_eq!(capture["properties"]["valid_from"]["maxLength"], expected);
+        let import = import_row_schema();
+        for field in ["date", "updated_at", "valid_from", "valid_until"] {
+            assert_eq!(import["properties"][field]["maxLength"], expected);
+        }
+        assert_eq!(registry_digest(), "b37082e4965e9009");
+
+        let store = temp_store();
+        let boundary = format!("2026-01-01T00:00:00.{}Z", "1".repeat(107));
+        assert_eq!(boundary.len(), MAX_TEMPORAL_VALUE_BYTES);
+        assert!(dispatch_tool(
+            &store,
+            "open-why_capture",
+            &json!({
+                "id":"mcp-time-boundary",
+                "title":"MCP time boundary",
+                "content":"canonical boundary",
+                "scope":"scope-a",
+                "valid_from":boundary
+            }),
+            0,
+        )
+        .is_ok());
+
+        let over_bound = format!("2026-01-01T00:00:00.{}Z", "1".repeat(108));
+        let oversized = dispatch_tool(
+            &store,
+            "open-why_capture",
+            &json!({
+                "id":"mcp-time-over-bound",
+                "title":"MCP time over bound",
+                "content":"must not persist",
+                "scope":"scope-a",
+                "valid_from":over_bound
+            }),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(oversized.payload["code"], "limit_exceeded");
+
+        let non_ascii = "é".repeat(MAX_TEMPORAL_VALUE_BYTES / 2);
+        assert_eq!(non_ascii.len(), MAX_TEMPORAL_VALUE_BYTES);
+        let noncanonical = dispatch_tool(
+            &store,
+            "open-why_capture",
+            &json!({
+                "id":"mcp-time-non-ascii",
+                "title":"MCP time non ASCII",
+                "content":"must not persist",
+                "scope":"scope-a",
+                "valid_from":non_ascii
+            }),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(noncanonical.payload["code"], "invalid_arguments");
+        assert_eq!(store.count_for_scope("scope-a").unwrap(), 1);
     }
 
     #[test]
@@ -1469,6 +1579,50 @@ mod tests {
         .unwrap_err();
         assert_eq!(unknown_row_field.payload["code"], "invalid_arguments");
         assert_eq!(store.count_for_scope("scope-a").unwrap(), 0);
+    }
+
+    #[test]
+    fn public_import_reports_exact_replay_and_typed_identity_conflict() {
+        let store = temp_store();
+        let original = json!({
+            "id":"stable-import","kind":"decision","title":"stable title",
+            "content":"stable body","importance":0.5,"source":"test",
+            "author":"tester","date":"2026-01-01","scope":"scope-a",
+            "git_refs":[{"commit_hash":"original","commit_subject":"Original"}]
+        });
+        let args = json!({"scope":"scope-a","rows":[original.clone()]});
+        assert_eq!(
+            dispatch_tool(&store, "open-why_import", &args, 0).unwrap()["imported"],
+            1
+        );
+        assert_eq!(
+            dispatch_tool(&store, "open-why_import", &args, 0).unwrap()["imported"],
+            0
+        );
+
+        let mut conflict = original;
+        conflict["content"] = json!("changed body");
+        conflict["git_refs"] = json!([{
+            "commit_hash":"must-not-append","commit_subject":"Must not append"
+        }]);
+        let error = dispatch_tool(
+            &store,
+            "open-why_import",
+            &json!({"scope":"scope-a","rows":[conflict]}),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.payload["contract"], RATIONALE_IMPORT_CONTRACT);
+        assert_eq!(error.payload["code"], "identity_conflict");
+        assert_eq!(
+            error.payload["message"],
+            "record identity conflicts with sealed evidence"
+        );
+        assert!(!error.payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("changed body"));
+        assert_eq!(store.linked_commits("stable-import").unwrap().len(), 1);
     }
 
     #[test]
