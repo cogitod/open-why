@@ -337,8 +337,7 @@ pub fn inspect_store(path: &Path) -> Result<StoreCompatibility> {
     let inspect_flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_URI;
-    #[cfg(unix)]
-    let inspect_flags = inspect_flags | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let inspect_flags = crate::private_store_path::sqlite_open_flags(inspect_flags);
     let conn = prepared
         .open_connection(|_| Connection::open_with_flags(uri, inspect_flags))
         .with_context(|| format!("inspect {}", path.display()))?;
@@ -408,10 +407,11 @@ impl Store {
             }
         };
         #[cfg(unix)]
-        let open_flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let open_flags = crate::private_store_path::sqlite_open_flags(
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        );
         #[cfg(not(unix))]
         let open_flags = OpenFlags::default();
         let conn = prepared

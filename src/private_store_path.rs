@@ -4,6 +4,18 @@ use anyhow::Result;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn sqlite_open_flags(flags: rusqlite::OpenFlags) -> rusqlite::OpenFlags {
+    #[cfg(target_vendor = "apple")]
+    return flags | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+
+    // Linux and Android anchor SQLite below `/proc/self/fd/<parent>`. SQLite's
+    // NOFOLLOW flag rejects that procfs symlink before opening the validated
+    // leaf; openat(O_NOFOLLOW), descriptor/path identity checks, and
+    // SQLITE_FCNTL_HAS_MOVED provide the equivalent leaf and handoff defenses.
+    #[cfg(not(target_vendor = "apple"))]
+    flags
+}
+
 pub(crate) struct PreparedStorePath {
     sqlite_path: PathBuf,
     #[cfg(unix)]
@@ -292,6 +304,52 @@ mod tests {
 
     static FIXTURE_SERIAL: AtomicU64 = AtomicU64::new(0);
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procfd_anchor_uses_descriptor_checks_instead_of_sqlite_nofollow() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-procfd-open-{}-{nonce}",
+                std::process::id()
+            ));
+        let target = root.join("store.db");
+        let prepared = prepare(&target, true, true).unwrap().unwrap();
+        assert!(
+            std::fs::symlink_metadata(prepared.sqlite_path().parent().unwrap())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let rejected = Connection::open_with_flags(
+            prepared.sqlite_path(),
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_err();
+        assert_eq!(
+            rejected.sqlite_error().unwrap().extended_code,
+            rusqlite::ffi::SQLITE_CANTOPEN_SYMLINK
+        );
+
+        let connection = prepared
+            .open_connection(|path| {
+                Connection::open_with_flags(path, sqlite_open_flags(OpenFlags::default()))
+            })
+            .unwrap();
+        connection
+            .execute_batch("CREATE TABLE procfd_probe (value INTEGER NOT NULL);")
+            .unwrap();
+        drop(connection);
+
+        assert!(target.is_file());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn replacement_race_stays_on_validated_directory() {
         let nonce = SystemTime::now()
@@ -319,10 +377,7 @@ mod tests {
         let prepared = prepared.unwrap().unwrap();
         let connection = prepared
             .open_connection(|path| {
-                Connection::open_with_flags(
-                    path,
-                    OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-                )
+                Connection::open_with_flags(path, sqlite_open_flags(OpenFlags::default()))
             })
             .unwrap();
         connection
@@ -373,10 +428,11 @@ mod tests {
             .open_connection(|path| {
                 Connection::open_with_flags(
                     path,
-                    OpenFlags::SQLITE_OPEN_READ_WRITE
-                        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                        | OpenFlags::SQLITE_OPEN_URI
-                        | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    sqlite_open_flags(
+                        OpenFlags::SQLITE_OPEN_READ_WRITE
+                            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                            | OpenFlags::SQLITE_OPEN_URI,
+                    ),
                 )
             })
             .unwrap();
@@ -458,10 +514,11 @@ mod tests {
             |path| {
                 Connection::open_with_flags(
                     path,
-                    OpenFlags::SQLITE_OPEN_READ_WRITE
-                        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                        | OpenFlags::SQLITE_OPEN_URI
-                        | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    sqlite_open_flags(
+                        OpenFlags::SQLITE_OPEN_READ_WRITE
+                            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                            | OpenFlags::SQLITE_OPEN_URI,
+                    ),
                 )
             },
             || {
