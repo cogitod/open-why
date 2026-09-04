@@ -155,7 +155,7 @@ impl Store {
 
     /// Native FTS5 external-content lexical index with `scope`, `title`, `content`, and
     /// `tags` columns, synchronized by triggers,
-    /// ranked by `bm25(decisions_fts, 0, 10, 5, 1)` — scope weight 0, title 10, content 5,
+    /// ranked by `bm25(decisions_fts, 0, 10, 5, 1)`: scope weight 0, title 10, content 5,
     /// tags 1. This makes the lexical arm byte-for-byte the same engine the TS side calls.
     fn ensure_fts(&self) -> Result<()> {
         self.conn.execute_batch(
@@ -166,7 +166,7 @@ impl Store {
         )?;
         self.ensure_fts_triggers()?;
         // Backfill stores created before the FTS index existed. Detect it by the inverted
-        // index being empty while the content table has rows — the FTS5 external-content
+        // index being empty while the content table has rows. The FTS5 external-content
         // `'rebuild'` command is unreliable against a TEXT-primary-key content table, so
         // backfill with the same explicit insert shape the triggers use.
         let idx_count: i64 =
@@ -431,7 +431,7 @@ impl Store {
     }
 
     /// `search` with supersession control. `include_superseded` relaxes the active-only filter so
-    /// retired decisions surface too — the historical arm of "what changed and why".
+    /// retired decisions surface too, providing the historical arm of "what changed and why".
     pub fn search_with(
         &self,
         query: &str,
@@ -1300,7 +1300,7 @@ impl Store {
 
     /// Search and split into `(results, drops)`: the top `limit` and the next `drop_count`
     /// near-miss candidates, each with its ranking explanation. The drops are the candidates
-    /// that fused but lost the top-N slice — "what didn't make it, and by how much".
+    /// that fused but lost the top-N slice: "what didn't make it, and by how much".
     pub fn search_records_drops(
         &self,
         query: &str,
@@ -1477,7 +1477,8 @@ impl Store {
             .optional()?)
     }
 
-    /// Walk the supersession chain forward from `id` — `[id, superseded_by(id), superseded_by(...)…]`
+    /// Walk the supersession chain forward from `id`:
+    /// `[id, superseded_by(id), superseded_by(...)]`
     /// until a record with no successor. Returns at most `cap` records; an unknown id yields empty.
     pub fn supersession_chain(&self, id: &str, cap: usize) -> Result<Vec<Record>> {
         let mut out = Vec::new();
@@ -1574,7 +1575,7 @@ impl Store {
         Ok(n as usize)
     }
 
-    /// Record explicit retrieval feedback on a decision — the closing half of the usage→quality
+    /// Record explicit retrieval feedback on a decision, closing the usage-to-quality
     /// loop. A helpful verdict raises the record's effectiveness and a not-helpful verdict lowers
     /// it. The delta lands on the effective value (ungraded prior 0.5), clamped to
     /// `[0.01, 1.0]`, and `updated_at` is
@@ -1687,7 +1688,7 @@ struct RankRow<'a> {
     content: &'a str,
 }
 
-/// Per-result ranking explanation — why a row ranked where it did. Exposed by `--explain`.
+/// Per-result ranking explanation for why a row ranked where it did. Exposed by `--explain`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RankExplanation {
     pub similarity: f64,
@@ -1708,7 +1709,7 @@ pub type Explained = Vec<(Record, RankExplanation)>;
 /// Hybrid rerank using reciprocal-rank fusion of a
 /// semantic arm (sorted by hybrid score) and a lexical arm (the FTS5 `bm25()` order supplied by
 /// the caller, already narrow-then-broad), then slice. Recency enters through the semantic arm's
-/// hybrid score — floored, so age cannot bury a best match — never as a multiplicative gate on
+/// hybrid score. It is floored so age cannot bury a best match and never acts as a multiplicative gate on
 /// the fused score.
 fn rank(
     query: &str,
@@ -1887,7 +1888,7 @@ fn rank_by<T>(
     order.dedup();
     // Post-fusion relevance gate: drop candidates
     // that cleared BM25/RRF fusion but are not actually relevant to the query, before the
-    // final score sort — so a filtered-out noise row can't block a genuine match from the
+    // final score sort, so a filtered-out noise row can't block a genuine match from the
     // top-N slice. Must run on the full fused set, not just the eventual top `limit`.
     order.retain(|&i| crate::relevance::passes(capsules[i].sim, capsules[i].lexical_gate_score));
     order.sort_by(|&a, &b| {
@@ -2096,7 +2097,7 @@ mod tests {
 
     #[test]
     fn semantic_similarity_surfaces_a_row_with_no_lexical_overlap() {
-        // "feline" shares no token with "cat", but its embedding matches — semantic
+        // "feline" shares no token with "cat", but its embedding matches. Semantic
         // similarity must rank it first and must not require a lexical hit.
         let rows = vec![
             decision(
@@ -2124,7 +2125,7 @@ mod tests {
 
     #[test]
     fn recency_decay_floors_at_0_3() {
-        // Age must never bury a correct answer to zero — the decay asymptotes at 0.3.
+        // Age must never bury a correct answer at zero; the decay asymptotes at 0.3.
         assert!((recency_decay(0.0, 7.0) - 1.0).abs() < 1e-9);
         assert!((recency_decay(1_000.0, 7.0) - RECENCY_DECAY_FLOOR).abs() < 1e-9);
         // Non-positive half-life returns the floor rather than dividing by zero.
@@ -2205,7 +2206,7 @@ mod tests {
     #[test]
     fn fts5_lexical_orders_multi_term_match_first() {
         // The row matching both query terms must outrank the row matching only one. FTS5 bm25()
-        // handles idf + length normalisation natively — this is delegated to SQLite, not derived.
+        // handles idf and length normalisation natively. SQLite owns this behavior.
         let store = temp_store();
         store
             .capture(

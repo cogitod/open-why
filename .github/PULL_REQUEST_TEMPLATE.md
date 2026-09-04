@@ -12,4 +12,4 @@ Fixes #
 - [ ] If ranking changed (`src/db.rs`, `src/relevance.rs`): ran `why-golden` and noted the pass count below
 
 ## Notes
-Anything a reviewer should know — behavior changes, ranking-constant changes, follow-ups you're deliberately not doing here.
+Note behavior changes, ranking-constant changes, and follow-up work that is outside this PR.

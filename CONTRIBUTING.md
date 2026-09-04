@@ -1,6 +1,6 @@
 # Contributing to open-why
 
-Issues and PRs welcome. This is a small, single-maintainer project — keep changes
+Issues and PRs are welcome. This is a small, single-maintainer project. Keep changes
 scoped and cite what you're changing and why.
 
 ## Local setup
@@ -13,7 +13,7 @@ cargo build --release
 
 `cargo build` fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` (via the
 `ort` crate) unless told not to. If your network can't reach it, point
-`ORT_LIB_LOCATION` at a pre-installed onnxruntime instead — no `Cargo.toml` change
+`ORT_LIB_LOCATION` at a pre-installed ONNX Runtime instead. No `Cargo.toml` change is
 needed:
 
 ```bash
@@ -42,7 +42,7 @@ cargo test
 ```
 
 If your change touches ranking (`src/db.rs`, `src/relevance.rs`) and you have your own
-golden fixture (see [docs/retrieval-parity.md](docs/retrieval-parity.md) — none
+golden fixture (see [docs/retrieval-parity.md](docs/retrieval-parity.md); none
 ships in this repo, it's only meaningful against your own corpus), also run the
 golden-parity harness and note the pass count in your PR if it changed:
 
@@ -53,11 +53,11 @@ cargo build --release --bin why-golden && ./target/release/why-golden --fixture 
 ## Opening a PR
 
 - Link an issue if one exists.
-- Describe what changed and why — the "why" matters more here than most projects.
+- Describe what changed and why. The rationale is part of the review evidence.
 - Note any behavior change, even a small one. Do not retune ranking constants
   without representative regression evidence.
 - `main` requires the CI checks (`leak-check`, `build-and-test`) to pass before merge.
 
 ## Reporting a security issue
 
-Don't open a public issue — see [SECURITY.md](SECURITY.md).
+Do not open a public issue. See [SECURITY.md](SECURITY.md).
