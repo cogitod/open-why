@@ -1,22 +1,23 @@
 # Retrieval parity
 
-`why-golden` checks open-why's top-1 result against a golden set you provide: for each
-query, the top-1 memory some reference engine (e.g. cogitod's production `mem_search`)
-returned against your own corpus. The memory id survives the mirror verbatim, so parity
-is an exact-id comparison, not a fuzzy title match. This is inherently private — it's
-only meaningful against your own live corpus — so no fixture ships in this repo; point
-`--fixture` at your own file in the same shape:
+`why-golden` checks open-why's top result against a golden set you provide. Each
+query records the stable ID returned by a trusted reference run, so parity is an
+exact-ID comparison rather than a fuzzy title match.
+
+Golden sets often reflect private source material. No real corpus fixture ships in
+this repository. Keep fixtures outside the checkout, sanitize descriptions, and
+never commit exported records merely to reproduce a ranking result.
 
 ```json
 {
-  "description": "Golden retrieval parity set",
-  "scope": "1",
-  "captured_at": "2026-08-30T06:44:00Z",
+  "description": "Sanitized retrieval parity set",
+  "scope": "example-project",
+  "captured_at": "2026-01-01T00:00:00Z",
   "queries": [
     {
       "query": "example search query",
       "types": ["fact"],
-      "expected": { "id": "<uuid>", "title": "example title", "type": "fact" }
+      "expected": { "id": "example-record-id", "title": "example title", "type": "fact" }
     }
   ]
 }
@@ -24,29 +25,25 @@ only meaningful against your own live corpus — so no fixture ships in this rep
 
 ```bash
 OPEN_WHY_EMBED_MODEL_PATH=/path/to/all-MiniLM-L6-v2 \
-  cargo run --release --bin why-golden -- --fixture /path/to/your-golden-queries.json
+  cargo run --release --bin why-golden -- --fixture /path/to/golden-queries.json
 ```
 
-Both engines are run against the same corpus (open-why's store is a mirror of
-cogitod's durable memories) and the same local embedder. The reference answer is
-captured, not computed live, so the check is a deterministic regression gate.
+Load the same corpus used to produce the captured expectations and configure the
+same embedder. The reference answers are not computed live, making the harness a
+deterministic regression gate.
 
-The lexical arm is a native SQLite FTS5 external-content table
-(`decisions_fts`, columns `scope/title/content/tags`, ranked by
-`bm25(decisions_fts, 0, 10, 5, 1)`) — the same engine cogitod's
-`MemoryRepository.lexicalSearchIds` calls, including its narrow-then-broad
-AND→OR heuristic and its `toSearchTerms` tokenization (`[a-z0-9_]+`, FTS5
-stopwords).
+The lexical arm uses a native SQLite FTS5 external-content table
+(`decisions_fts`, columns `scope/title/content/tags`) ranked by
+`bm25(decisions_fts, 0, 10, 5, 1)`. It applies a narrow-then-broad AND-to-OR
+heuristic and tokenizes lowercase ASCII words and underscores after removing FTS5
+stopwords.
 
-Known gap (2026-09-03): 5/8 golden exact, up from 4/8 after porting cogitod's
-post-fusion **relevance gate** (`MemoryRelevanceGate`: similarity floor +
-`RAG_UTILITY_THRESHOLD` lexical utility — see `src/relevance.rs`). The gate
-fixed the one failure that was a true admission problem (a weak-but-nonzero
-semantic-arm competitor scoring below `SIMILARITY_FLOOR`, crowding out the
-right answer). The remaining 3 misses are **ranking-order** mismatches, not
-admission problems: the expected record is present and gate-admitted, just
-outscored by 1-2 other admitted candidates in the RRF/hybrid fusion — so the
-relevance gate, which only filters and never reorders, can't reach them.
-Closing those needs a closer comparison of open-why's hybrid rerank
-(`rank_by` in `src/db.rs`) against cogitod's exact `searchMemoriesHybrid`
-fusion, tracked as a separate work item.
+Ranking changes should report:
+
+- exact top-result matches;
+- whether each miss was absent or merely ordered below another admitted result;
+- the fixture date and embedder identity;
+- confirmation that the fixture was kept out of the public repository.
+
+Do not retune constants to a tiny fixture. A change belongs in the engine only
+when a representative corpus and replay evidence show a general improvement.

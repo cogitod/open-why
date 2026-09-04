@@ -40,11 +40,18 @@ Four primitives, each small and composable:
   realizes. Ask which decisions a commit realizes, or which commits realized a
   decision. Library consumers can resolve any stable record ID through
   `Store::get_current_evidence`: it follows supersession to the active record and
-  returns that record's Git references plus the explicit chain it traversed.
+  returns that record's Git references plus the explicit chain it traversed. MCP
+  consumers can invert that relationship with `open-why_commit_links`: an exact
+  commit hash and explicit scope return bounded directly-linked historical record
+  IDs, which remain separate from current-rationale resolution.
 - **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
   hydrates the *current* version; history stays reachable. `--historical` (search,
   get, and MCP) reaches past supersession and walks the chain, so "what changed and
-  why" is answerable.
+  why" is answerable. MCP consumers can page an exact chain with
+  `open-why_history`: its cursor is the next stable record ID, records remain in
+  predecessor-to-successor order, and every record carries its own Git evidence.
+  History v1 validates each record's timestamp syntax and positive interval; it
+  does not certify that adjacent intervals are contiguous or non-overlapping.
 - **Hybrid recall** — reciprocal-rank fusion of a **semantic arm** (local on-device
   `all-MiniLM-L6-v2` embeddings) and a **lexical arm** (FTS5-style BM25 with
   title/content column weights), weighted by importance and effectiveness and
@@ -64,9 +71,9 @@ Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
 
 **Pre-1.0.** The git-mining path (`why init`, `why capture`, `why search`, `why
 serve`) is fully standalone and works against any git repo today. The `why import`
-path is how this store gets bulk-loaded from an external system (currently:
-cogitod's durable memories) — see [retrieval-parity](retrieval-parity.md) for what
-that does and doesn't require.
+path accepts a portable JSON export from any external system; see
+[retrieval-parity](retrieval-parity.md) for how to validate an imported corpus
+without publishing it.
 
 ## Full CLI surface
 

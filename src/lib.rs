@@ -8,7 +8,7 @@
 //! stores decision records (`decision` / `fact` / `reference` / `pattern` / `doc` /
 //! `project` / `observation`) with temporal identity (`valid_from` / `valid_until` /
 //! `superseded_by` — decisions are superseded, never deleted) and git linkage
-//! (commit ↔ decision), and it ranks recall the way cogitod's calibrated engine does:
+//! (commit ↔ decision), and it ranks recall with a stable, regression-tested model:
 //! reciprocal-rank fusion of a semantic arm (local MiniLM embeddings) and a lexical
 //! arm (FTS5-style BM25), weighted by importance and effectiveness and decayed by
 //! Ebbinghaus recency with spaced-repetition stability.
@@ -40,4 +40,10 @@ pub mod store;
 // Convenience re-exports — the library surface.
 pub use db::{default_path, RankExplanation, Store};
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
-pub use store::{Decision, EvidenceRecord, ExternalDecision, GitRef, Record};
+pub use store::{
+    CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
+    CurrentRecordResolution, Decision, ExternalDecision, GitRef, RationaleHistoryErrorCode,
+    RationaleHistoryRecord, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
+    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
+    MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
+};

@@ -12,11 +12,11 @@ pub fn ask(question: &str, repo: &Path, limit: usize) -> Result<String> {
         let mined = miner::mine(repo)?;
         store.import_decisions(&scope, &mined)?;
     }
-    let hits = store.search(question, &[scope.as_str(), "global"], &[], limit)?;
+    let hits = store.search_records(question, &[scope.as_str(), "global"], &[], limit)?;
     if hits.is_empty() {
         return Ok(format!("no decision found for: \"{question}\""));
     }
-    Ok(render(hits))
+    Ok(render_records(hits))
 }
 
 pub fn render(decisions: Vec<Decision>) -> String {
@@ -63,7 +63,7 @@ pub fn render_records(records: Vec<Record>) -> String {
         } else {
             String::new()
         };
-        out.push_str(&format!("- {}{}\n", r.title, marker));
+        out.push_str(&format!("- {} [{}]{}\n", r.title, r.id, marker));
         out.push_str(&format!("  {} · {} · {}\n", r.date, r.author, r.source));
         let snippet: String = r
             .content
@@ -86,7 +86,7 @@ mod tests {
     fn base_decision() -> Decision {
         Decision {
             sha: String::new(),
-            author: "adrian".to_string(),
+            author: "developer".to_string(),
             date: "2026-01-01".to_string(),
             updated_at: String::new(),
             subject: "Use SQLite".to_string(),
@@ -136,7 +136,7 @@ mod tests {
             content: String::new(),
             importance: 0.5,
             source: String::new(),
-            author: "adrian".to_string(),
+            author: "developer".to_string(),
             date: "2026-01-01".to_string(),
             commit_sha: String::new(),
             scope: "global".to_string(),

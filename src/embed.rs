@@ -4,8 +4,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Maximum characters fed to the tokenizer. Mirrors cogitod's XenovaBackend MAX_TEXT_LENGTH
-/// (2000 chars ≈ ~500 tokens, the MiniLM-L6 safe limit).
+/// Maximum characters fed to the tokenizer (roughly 500 tokens, the MiniLM-L6 safe limit).
 const MAX_TEXT_LENGTH: usize = 2000;
 /// all-MiniLM-L6-v2 max sequence length (config.json `max_position_embeddings`).
 const MAX_SEQ_LEN: usize = 512;
@@ -18,11 +17,10 @@ pub trait Embedder: Send + Sync {
     fn embed(&self, text: &str) -> Result<Vec<f32>>;
 }
 
-/// A local, on-device embedder: the same `Xenova/all-MiniLM-L6-v2` model cogitod runs, loaded
-/// directly through onnxruntime + the HuggingFace tokenizer. Replicates Transformers.js
-/// `feature-extraction` exactly — truncate to 2000 chars, mean-pool over the attention mask
-/// (CLS/SEP included), then L2-normalize — so vectors land in the same 384-dim space as
-/// cogitod's Xenova backend. This is what keeps TS cogitod and Rust open-why comparable.
+/// A local, on-device `Xenova/all-MiniLM-L6-v2` embedder loaded directly through ONNX Runtime
+/// and the Hugging Face tokenizer. It follows the standard sentence-transformer pipeline:
+/// truncate to 2000 characters, mean-pool over the attention mask (CLS/SEP included), then
+/// L2-normalize into the model's 384-dimensional vector space.
 pub struct LocalEmbedder {
     tokenizer: tokenizers::Tokenizer,
     session: Mutex<ort::session::Session>,
@@ -148,7 +146,7 @@ impl Embedder for LocalEmbedder {
     }
 }
 
-/// An OpenAI-compatible embeddings endpoint (also serves cogitod's p-embeddings HTTP surface).
+/// An OpenAI-compatible embeddings endpoint.
 pub struct HttpEmbedder {
     url: String,
     model: String,
@@ -306,16 +304,12 @@ mod tests {
             return;
         };
         let embedder = LocalEmbedder::new(Path::new(&dir)).unwrap();
-        let v = embedder
-            .embed("open-why cogitod dependency inversion")
-            .unwrap();
+        let v = embedder.embed("evidence bound decision recall").unwrap();
         assert_eq!(v.len(), 384);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-3, "expected unit norm, got {norm}");
         // Deterministic: same input, same vector.
-        let again = embedder
-            .embed("open-why cogitod dependency inversion")
-            .unwrap();
+        let again = embedder.embed("evidence bound decision recall").unwrap();
         assert_eq!(v, again);
     }
 
@@ -329,8 +323,8 @@ mod tests {
             "TencentDB agent memory harvest",
         ];
         let titles = [
-            "Cogito memory capability map — engine is real, capture wiring is the gap",
-            "TencentDB-Agent-Memory harvest: what is already in cogitod and what is not",
+            "Decision recall capability map: evidence exists but capture is incomplete",
+            "Agent memory survey: separate proven behavior from proposed behavior",
             "research: agent memory as execution state separate from context windows",
         ];
         for q in queries {

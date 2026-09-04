@@ -10,8 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Scan tracked files for secrets / unreviewed internal-data exports
+      - name: Scan tracked files for secrets, record exports, and private provenance
         run: bash hooks/check-leaks.sh tracked
+
+      - name: Test staged index leak-scan authority
+        run: bash tests/check-leaks.sh
 
   build-and-test:
     runs-on: ubuntu-latest
