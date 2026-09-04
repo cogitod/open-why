@@ -69,7 +69,7 @@ pub(super) const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "open-why_history",
-        description: "Page one exact supersession chain with complete records and Git evidence.",
+        description: "Page the exact supersession chain forward from a given ID, with complete records and Git evidence. Pass the earliest (originating) ID to see the full chain; a current ID returns only itself.",
         kind: ToolKind::History,
     },
     ToolSpec {

@@ -51,7 +51,7 @@ fn temporal_schema_and_runtime_share_the_canonical_byte_limit() {
     for field in ["date", "updated_at", "valid_from", "valid_until"] {
         assert_eq!(import["properties"][field]["maxLength"], expected);
     }
-    assert_eq!(registry_digest(), "b37082e4965e9009");
+    assert_eq!(registry_digest(), "c8e490fedb5ea771");
 
     let store = temp_store();
     let boundary = format!("2026-01-01T00:00:00.{}Z", "1".repeat(107));
