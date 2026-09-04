@@ -195,6 +195,15 @@ Canonical temporal values use ASCII `YYYY-MM-DDTHH:MM:SS[.digits]Z`. Their share
 128-byte limit is measured over UTF-8 at runtime and generated from the same public
 constant in MCP catalog schemas.
 
+`Store::link_git_in_scope` accepts the sealed `EvidenceIdentity` returned by the
+scoped Current read. It verifies the store, scope, record, and immutable digest in
+one immediate transaction before creating a Git link. Its versioned result reports
+`created`, `exact_replay`, or a fixed typed error without exposing record authority.
+The existing `Store::link_git` method is retained only as a trusted, unscoped
+compatibility API. New scoped integrations should not call it. The MCP server keeps
+the existing `open-why_link` schema and success payload, but delegates its write to
+the scoped method.
+
 ## Configuration
 
 | Variable | Effect |

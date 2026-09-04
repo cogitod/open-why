@@ -4,15 +4,18 @@ use crate::store::{
     CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,
     EvidenceIdentityResolution, ExternalDecision, GitRef, RationaleHistoryErrorCode,
     RationaleHistoryRecord, RationaleHistoryResolution, Record, RecordIdentityConflict,
+    ScopedCommitLinkErrorCode, ScopedCommitLinkOutcome, ScopedCommitLinkResolution,
     ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution, StoreCompatibility,
     StoreCompatibilityErrorCode, StoreIdentity, StoreIdentityBindingError,
     StoreIdentityBindingErrorCode, SupersessionConflict, SupersessionCycle,
     SupersessionTargetNotFound, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
     EVIDENCE_IDENTITY_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES,
-    MAX_COMMIT_LINK_RECORD_ID_BYTES, MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_GIT_REFS,
-    MAX_HISTORY_PAGE_RECORDS, MAX_HISTORY_PAGE_SOURCE_BYTES, MAX_SUPERSESSION_CHAIN,
+    MAX_COMMIT_LINK_HASH_BYTES, MAX_COMMIT_LINK_RECORD_ID_BYTES, MAX_COMMIT_LINK_SCOPE_BYTES,
+    MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_GIT_REFS, MAX_HISTORY_PAGE_RECORDS,
+    MAX_HISTORY_PAGE_SOURCE_BYTES, MAX_STORE_INSTANCE_ID_BYTES, MAX_SUPERSESSION_CHAIN,
     MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT, RECORD_DIGEST_CONTRACT,
-    SCOPED_CURRENT_EVIDENCE_CONTRACT, STORE_SCHEMA_FAMILY, STORE_SCHEMA_VERSION,
+    SCOPED_COMMIT_LINK_WRITE_CONTRACT, SCOPED_CURRENT_EVIDENCE_CONTRACT, STORE_SCHEMA_FAMILY,
+    STORE_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use rusqlite::{
@@ -2356,6 +2359,13 @@ impl Store {
         Ok(out)
     }
 
+    /// Compatibility-only commit linking for trusted callers that already own
+    /// store authority.
+    ///
+    /// # Deprecated
+    ///
+    /// This authority-bypassing API remains for semantic-version compatibility.
+    /// Untrusted integrations must use `link_git_in_scope`.
     pub fn link_git(
         &self,
         decision_id: &str,
@@ -2368,6 +2378,157 @@ impl Store {
             params![decision_id, commit_hash, commit_subject],
         )?;
         Ok(())
+    }
+
+    /// Atomically link a commit through a sealed, store-bound evidence identity.
+    pub fn link_git_in_scope(
+        &self,
+        evidence_identity: &EvidenceIdentity,
+        commit_hash: &str,
+        commit_subject: &str,
+    ) -> ScopedCommitLinkResolution {
+        if commit_hash.is_empty()
+            || commit_hash.len() > MAX_COMMIT_LINK_HASH_BYTES
+            || commit_subject.len() > MAX_COMMIT_LINK_SUBJECT_BYTES
+        {
+            return scoped_commit_link_error(ScopedCommitLinkErrorCode::InvalidRequest, false);
+        }
+        if !valid_evidence_identity_shape(evidence_identity) {
+            return scoped_commit_link_error(ScopedCommitLinkErrorCode::EvidenceUnavailable, false);
+        }
+
+        match self.link_git_in_scope_inner(evidence_identity, commit_hash, commit_subject) {
+            Ok(resolution) => resolution,
+            Err(error) => scoped_commit_link_error(
+                ScopedCommitLinkErrorCode::StoreUnavailable,
+                store_error_is_retryable(&error),
+            ),
+        }
+    }
+
+    fn link_git_in_scope_inner(
+        &self,
+        supplied: &EvidenceIdentity,
+        commit_hash: &str,
+        commit_subject: &str,
+    ) -> Result<ScopedCommitLinkResolution> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let store_instance_id: String = transaction.query_row(
+            "SELECT store_instance_id FROM open_why_metadata WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let metadata: Option<(String, String, Option<String>)> = transaction
+            .query_row(
+                "SELECT id,scope,record_digest_v1 FROM decisions WHERE id=?1 AND scope=?2",
+                params![supplied.record_id, supplied.scope],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((record_id, scope, Some(sealed_digest))) = metadata else {
+            transaction.rollback()?;
+            return Ok(scoped_commit_link_error(
+                ScopedCommitLinkErrorCode::EvidenceUnavailable,
+                false,
+            ));
+        };
+        if store_instance_id != supplied.store_instance_id
+            || scope != supplied.scope
+            || record_id != supplied.record_id
+            || sealed_digest != supplied.record_digest
+        {
+            transaction.rollback()?;
+            return Ok(scoped_commit_link_error(
+                ScopedCommitLinkErrorCode::EvidenceUnavailable,
+                false,
+            ));
+        }
+
+        let Some(row) = Self::record_digest_row_in_scope_on(&transaction, &record_id, &scope)?
+        else {
+            transaction.rollback()?;
+            return Ok(scoped_commit_link_error(
+                ScopedCommitLinkErrorCode::EvidenceUnavailable,
+                false,
+            ));
+        };
+        if record_digest_v1(&row).ok().as_deref() != Some(sealed_digest.as_str()) {
+            transaction.rollback()?;
+            return Ok(scoped_commit_link_error(
+                ScopedCommitLinkErrorCode::EvidenceUnavailable,
+                false,
+            ));
+        }
+
+        let authoritative_identity = EvidenceIdentity {
+            contract: EVIDENCE_IDENTITY_CONTRACT,
+            record_digest_contract: RECORD_DIGEST_CONTRACT,
+            store_instance_id,
+            scope,
+            record_id,
+            record_digest: sealed_digest,
+        };
+        let existing_git_ref: Option<GitRef> = transaction
+            .query_row(
+                "SELECT commit_hash,commit_subject FROM decision_git_refs
+                 WHERE decision_id=?1 AND commit_hash=?2",
+                params![authoritative_identity.record_id, commit_hash],
+                |row| {
+                    Ok(GitRef {
+                        commit_hash: row.get(0)?,
+                        commit_subject: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(git_ref) = existing_git_ref {
+            if git_ref.commit_subject != commit_subject {
+                transaction.rollback()?;
+                return Ok(scoped_commit_link_error(
+                    ScopedCommitLinkErrorCode::LinkConflict,
+                    false,
+                ));
+            }
+            transaction.rollback()?;
+            return Ok(ScopedCommitLinkResolution::Ok {
+                contract: SCOPED_COMMIT_LINK_WRITE_CONTRACT,
+                outcome: ScopedCommitLinkOutcome::ExactReplay,
+                evidence_identity: authoritative_identity,
+                git_ref,
+            });
+        }
+
+        let affected = transaction.execute(
+            "INSERT INTO decision_git_refs (decision_id,commit_hash,commit_subject)
+             VALUES (?1,?2,?3)",
+            params![
+                authoritative_identity.record_id,
+                commit_hash,
+                commit_subject
+            ],
+        )?;
+        if affected != 1 {
+            transaction.rollback()?;
+            anyhow::bail!("commit-link insert did not affect exactly one row");
+        }
+        let git_ref = transaction.query_row(
+            "SELECT commit_hash,commit_subject FROM decision_git_refs
+             WHERE decision_id=?1 AND commit_hash=?2",
+            params![authoritative_identity.record_id, commit_hash],
+            |row| {
+                Ok(GitRef {
+                    commit_hash: row.get(0)?,
+                    commit_subject: row.get(1)?,
+                })
+            },
+        )?;
+        transaction.commit()?;
+        Ok(ScopedCommitLinkResolution::Ok {
+            contract: SCOPED_COMMIT_LINK_WRITE_CONTRACT,
+            outcome: ScopedCommitLinkOutcome::Created,
+            evidence_identity: authoritative_identity,
+            git_ref,
+        })
     }
 
     /// Bulk-import mined decisions (commits + ADRs) into a scope. Idempotent.
@@ -2909,10 +3070,58 @@ fn migration_plan_digest() -> String {
 
 fn valid_store_instance_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 128
+        && value.len() <= MAX_STORE_INSTANCE_ID_BYTES
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn valid_evidence_identity_shape(identity: &EvidenceIdentity) -> bool {
+    identity.contract == EVIDENCE_IDENTITY_CONTRACT
+        && identity.record_digest_contract == RECORD_DIGEST_CONTRACT
+        && valid_store_instance_id(&identity.store_instance_id)
+        && !identity.scope.is_empty()
+        && identity.scope.len() <= MAX_COMMIT_LINK_SCOPE_BYTES
+        && !identity.record_id.is_empty()
+        && identity.record_id.len() <= MAX_COMMIT_LINK_RECORD_ID_BYTES
+        && identity.record_digest.len() == 64
+        && identity
+            .record_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn scoped_commit_link_error(
+    code: ScopedCommitLinkErrorCode,
+    retryable: bool,
+) -> ScopedCommitLinkResolution {
+    let message = match code {
+        ScopedCommitLinkErrorCode::InvalidRequest => "commit link request is invalid",
+        ScopedCommitLinkErrorCode::EvidenceUnavailable => "sealed evidence identity is unavailable",
+        ScopedCommitLinkErrorCode::LinkConflict => {
+            "commit link already exists with a different subject"
+        }
+        ScopedCommitLinkErrorCode::StoreUnavailable => "commit link store is unavailable",
+    };
+    ScopedCommitLinkResolution::Error {
+        contract: SCOPED_COMMIT_LINK_WRITE_CONTRACT,
+        code,
+        message: message.to_owned(),
+        retryable,
+    }
+}
+
+pub(crate) fn store_error_is_retryable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(inner, _))
+                if matches!(
+                    inner.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+        )
+    })
 }
 
 fn record_digest_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordDigestRow> {
@@ -3719,6 +3928,13 @@ mod tests {
             &format!("provider:test:{n}"),
         )
         .unwrap()
+    }
+
+    fn evidence_identity(store: &Store, id: &str, scope: &str) -> EvidenceIdentity {
+        match store.evidence_identity_in_scope(id, scope).unwrap() {
+            EvidenceIdentityResolution::Ok { identity } => identity,
+            resolution => panic!("expected evidence identity, got {resolution:?}"),
+        }
     }
 
     #[test]
@@ -5528,6 +5744,423 @@ mod tests {
                 RationaleHistoryResolution::Ok { .. }
             ));
         }
+    }
+
+    #[test]
+    fn scoped_commit_link_is_authoritative_idempotent_and_conflict_safe() {
+        let store = temp_store();
+        store
+            .import_external(&[history_row("sealed-link", None, "scope-a", "body")])
+            .unwrap();
+        let identity = evidence_identity(&store, "sealed-link", "scope-a");
+        let before_identity = identity.clone();
+
+        let created = store.link_git_in_scope(&identity, "abc123", "Create link");
+        assert_eq!(
+            created,
+            ScopedCommitLinkResolution::Ok {
+                contract: SCOPED_COMMIT_LINK_WRITE_CONTRACT,
+                outcome: ScopedCommitLinkOutcome::Created,
+                evidence_identity: identity.clone(),
+                git_ref: GitRef {
+                    commit_hash: "abc123".to_owned(),
+                    commit_subject: "Create link".to_owned(),
+                },
+            }
+        );
+        assert_eq!(
+            evidence_identity(&store, "sealed-link", "scope-a"),
+            before_identity
+        );
+        let CommitLinksResolution::Ok { items, .. } = store
+            .get_commit_links("scope-a", "abc123", None, 20)
+            .unwrap()
+        else {
+            panic!("created link must be readable through commit-links v1");
+        };
+        assert_eq!(items[0].record_id, "sealed-link");
+        assert_eq!(items[0].commit_subject, "Create link");
+
+        let observer = Connection::open(store.conn.path().unwrap()).unwrap();
+        let data_version = || {
+            observer
+                .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        let version_before = data_version();
+        let changes_before = store.conn.total_changes();
+        let replay = store.link_git_in_scope(&identity, "abc123", "Create link");
+        assert!(matches!(
+            replay,
+            ScopedCommitLinkResolution::Ok {
+                outcome: ScopedCommitLinkOutcome::ExactReplay,
+                ..
+            }
+        ));
+        assert_eq!(store.conn.total_changes(), changes_before);
+        assert_eq!(data_version(), version_before);
+
+        let conflict = store.link_git_in_scope(&identity, "abc123", "Changed subject");
+        assert!(matches!(
+            conflict,
+            ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::LinkConflict,
+                retryable: false,
+                ..
+            }
+        ));
+        assert_eq!(store.conn.total_changes(), changes_before);
+        assert_eq!(data_version(), version_before);
+        assert_eq!(
+            store.linked_commits("sealed-link").unwrap()[0].1,
+            "Create link"
+        );
+    }
+
+    #[test]
+    fn scoped_commit_link_collapses_identity_failures_before_effects() {
+        let store = temp_store();
+        store
+            .import_external(&[
+                history_row("sealed-link", None, "scope-a", "body"),
+                history_row("foreign-link", None, "scope-b", "foreign secret"),
+            ])
+            .unwrap();
+        let valid = evidence_identity(&store, "sealed-link", "scope-a");
+        let foreign = evidence_identity(&store, "foreign-link", "scope-b");
+        let mut cases = Vec::new();
+
+        let mut missing = valid.clone();
+        missing.record_id = "missing-link".to_owned();
+        cases.push(missing);
+        let mut wrong_scope = foreign;
+        wrong_scope.scope = "scope-a".to_owned();
+        cases.push(wrong_scope);
+        let mut wrong_store = valid.clone();
+        wrong_store.store_instance_id = "provider:another-store".to_owned();
+        cases.push(wrong_store);
+        let mut wrong_digest = valid.clone();
+        wrong_digest.record_digest = "0".repeat(64);
+        cases.push(wrong_digest);
+        let mut wrong_contract = valid.clone();
+        wrong_contract.contract = "open-why.evidence-identity/v0";
+        cases.push(wrong_contract);
+        let mut wrong_digest_contract = valid.clone();
+        wrong_digest_contract.record_digest_contract = "open-why.record-digest/v0";
+        cases.push(wrong_digest_contract);
+        let mut malformed_digest = valid.clone();
+        malformed_digest.record_digest = "A".repeat(64);
+        cases.push(malformed_digest);
+        let mut oversized_store = valid.clone();
+        oversized_store.store_instance_id = "a".repeat(MAX_STORE_INSTANCE_ID_BYTES + 1);
+        cases.push(oversized_store);
+        let mut empty_scope = valid.clone();
+        empty_scope.scope.clear();
+        cases.push(empty_scope);
+        let mut oversized_scope = valid.clone();
+        oversized_scope.scope = "s".repeat(MAX_COMMIT_LINK_SCOPE_BYTES + 1);
+        cases.push(oversized_scope);
+        let mut empty_record = valid.clone();
+        empty_record.record_id.clear();
+        cases.push(empty_record);
+        let mut oversized_record = valid.clone();
+        oversized_record.record_id = "r".repeat(MAX_COMMIT_LINK_RECORD_ID_BYTES + 1);
+        cases.push(oversized_record);
+
+        let observer = Connection::open(store.conn.path().unwrap()).unwrap();
+        let version_before: i64 = observer
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap();
+        let changes_before = store.conn.total_changes();
+        let expected = serde_json::to_vec(&scoped_commit_link_error(
+            ScopedCommitLinkErrorCode::EvidenceUnavailable,
+            false,
+        ))
+        .unwrap();
+        for identity in cases {
+            let resolution = store.link_git_in_scope(&identity, "abc123", "No link");
+            assert_eq!(serde_json::to_vec(&resolution).unwrap(), expected);
+            assert_eq!(store.conn.total_changes(), changes_before);
+            assert_eq!(
+                observer
+                    .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version_before
+            );
+        }
+        assert!(!store
+            .linked_commits("sealed-link")
+            .unwrap()
+            .iter()
+            .any(|git_ref| git_ref.0 == "abc123"));
+        assert!(!store
+            .linked_commits("foreign-link")
+            .unwrap()
+            .iter()
+            .any(|git_ref| git_ref.0 == "abc123"));
+
+        let invalid = store.link_git_in_scope(&valid, "", "No link");
+        assert!(matches!(
+            invalid,
+            ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+        let oversized = "é".repeat(MAX_COMMIT_LINK_HASH_BYTES / 2 + 1);
+        assert!(matches!(
+            store.link_git_in_scope(&valid, &oversized, "No link"),
+            ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.link_git_in_scope(
+                &valid,
+                "subject-too-long",
+                &"s".repeat(MAX_COMMIT_LINK_SUBJECT_BYTES + 1)
+            ),
+            ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+
+        let exact_commit = format!(" {} ", "c".repeat(MAX_COMMIT_LINK_HASH_BYTES - 2));
+        let exact_subject = "s".repeat(MAX_COMMIT_LINK_SUBJECT_BYTES);
+        let exact = store.link_git_in_scope(&valid, &exact_commit, &exact_subject);
+        let ScopedCommitLinkResolution::Ok { git_ref, .. } = exact else {
+            panic!("exact input bounds must be accepted");
+        };
+        assert_eq!(git_ref.commit_hash, exact_commit);
+        assert_eq!(git_ref.commit_subject, exact_subject);
+    }
+
+    #[test]
+    fn scoped_commit_link_recomputes_the_sealed_envelope_before_effects() {
+        let store = temp_store();
+        store
+            .import_external(&[history_row("sealed-link", None, "scope-a", "body")])
+            .unwrap();
+        let identity = evidence_identity(&store, "sealed-link", "scope-a");
+        let trigger: String = store
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema
+                 WHERE type='trigger' AND name='decisions_identity_update_guard'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch("DROP TRIGGER decisions_identity_update_guard")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE decisions SET content='tampered secret' WHERE id='sealed-link'",
+                [],
+            )
+            .unwrap();
+        store.conn.execute_batch(&trigger).unwrap();
+        let observer = Connection::open(store.conn.path().unwrap()).unwrap();
+        let version_before: i64 = observer
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap();
+        let changes_before = store.conn.total_changes();
+
+        assert_eq!(
+            store.link_git_in_scope(&identity, "abc123", "No link"),
+            scoped_commit_link_error(ScopedCommitLinkErrorCode::EvidenceUnavailable, false)
+        );
+        assert_eq!(store.conn.total_changes(), changes_before);
+        assert_eq!(
+            observer
+                .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            version_before
+        );
+        assert!(!store
+            .linked_commits("sealed-link")
+            .unwrap()
+            .iter()
+            .any(|git_ref| git_ref.0 == "abc123"));
+    }
+
+    #[test]
+    fn scoped_commit_link_reports_held_writer_without_leaking_details() {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "open-why-scoped-link-lock-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("link.db");
+        let store =
+            Store::open_with_store_instance_id(&path, &format!("provider:link:{n}")).unwrap();
+        store
+            .import_external(&[history_row("sealed-link", None, "scope-a", "body")])
+            .unwrap();
+        let identity = evidence_identity(&store, "sealed-link", "scope-a");
+        store
+            .conn
+            .busy_timeout(std::time::Duration::from_millis(0))
+            .unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let changes_before = store.conn.total_changes();
+
+        assert_eq!(
+            store.link_git_in_scope(&identity, "abc123", "No link"),
+            scoped_commit_link_error(ScopedCommitLinkErrorCode::StoreUnavailable, true)
+        );
+        assert_eq!(store.conn.total_changes(), changes_before);
+        writer.execute_batch("ROLLBACK").unwrap();
+        assert!(!store
+            .linked_commits("sealed-link")
+            .unwrap()
+            .iter()
+            .any(|git_ref| git_ref.0 == "abc123"));
+
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_scoped_link
+                 BEFORE INSERT ON decision_git_refs
+                 WHEN NEW.commit_hash='reject-insert'
+                 BEGIN SELECT RAISE(ABORT, 'private sqlite detail'); END",
+            )
+            .unwrap();
+        let changes_before = store.conn.total_changes();
+        let rejected = store.link_git_in_scope(&identity, "reject-insert", "No link");
+        assert_eq!(
+            rejected,
+            scoped_commit_link_error(ScopedCommitLinkErrorCode::StoreUnavailable, false)
+        );
+        assert!(!serde_json::to_string(&rejected)
+            .unwrap()
+            .contains("private sqlite detail"));
+        assert_eq!(store.conn.total_changes(), changes_before);
+        assert!(!store
+            .linked_commits("sealed-link")
+            .unwrap()
+            .iter()
+            .any(|git_ref| git_ref.0 == "reject-insert"));
+        drop(writer);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_scoped_commit_links_never_overwrite() {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "open-why-scoped-link-race-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("link.db");
+        let provider = format!("provider:link-race:{n}");
+        let store = Store::open_with_store_instance_id(&path, &provider).unwrap();
+        store.conn.execute_batch("PRAGMA journal_mode=WAL").unwrap();
+        store
+            .import_external(&[history_row("sealed-link", None, "scope-a", "body")])
+            .unwrap();
+        let identity = evidence_identity(&store, "sealed-link", "scope-a");
+
+        let race = |commit: &'static str, subjects: [&'static str; 2]| {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let mut handles = Vec::new();
+            for subject in subjects {
+                let path = path.clone();
+                let provider = provider.clone();
+                let identity = identity.clone();
+                let barrier = barrier.clone();
+                handles.push(std::thread::spawn(move || {
+                    let thread_store =
+                        Store::open_with_store_instance_id(&path, &provider).unwrap();
+                    barrier.wait();
+                    thread_store.link_git_in_scope(&identity, commit, subject)
+                }));
+            }
+            barrier.wait();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        };
+
+        let same = race("same-commit", ["same subject", "same subject"]);
+        assert_eq!(
+            same.iter()
+                .filter(|result| matches!(
+                    result,
+                    ScopedCommitLinkResolution::Ok {
+                        outcome: ScopedCommitLinkOutcome::Created,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(same.iter().any(|result| matches!(
+            result,
+            ScopedCommitLinkResolution::Ok {
+                outcome: ScopedCommitLinkOutcome::ExactReplay,
+                ..
+            } | ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::StoreUnavailable,
+                retryable: true,
+                ..
+            }
+        )));
+
+        let different = race("different-commit", ["first subject", "second subject"]);
+        assert_eq!(
+            different
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    ScopedCommitLinkResolution::Ok {
+                        outcome: ScopedCommitLinkOutcome::Created,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(different.iter().any(|result| matches!(
+            result,
+            ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::LinkConflict,
+                ..
+            } | ScopedCommitLinkResolution::Error {
+                code: ScopedCommitLinkErrorCode::StoreUnavailable,
+                retryable: true,
+                ..
+            }
+        )));
+        let stored = store.linked_commits("sealed-link").unwrap();
+        assert_eq!(stored.len(), 3);
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|git_ref| git_ref.0 == "same-commit")
+                .count(),
+            1
+        );
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|git_ref| git_ref.0 == "different-commit")
+                .count(),
+            1
+        );
+
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

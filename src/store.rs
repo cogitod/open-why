@@ -7,16 +7,20 @@ pub const COMMIT_LINKS_CONTRACT: &str = "open-why.commit-links/v1";
 pub const RATIONALE_IMPORT_CONTRACT: &str = "open-why.rationale-import/v1";
 pub const EVIDENCE_IDENTITY_CONTRACT: &str = "open-why.evidence-identity/v1";
 pub const SCOPED_CURRENT_EVIDENCE_CONTRACT: &str = "open-why.scoped-current-evidence/v1";
+pub const SCOPED_COMMIT_LINK_WRITE_CONTRACT: &str = "open-why.scoped-commit-link-write/v1";
 pub const RECORD_DIGEST_CONTRACT: &str = "open-why.record-digest/v1";
 pub const STORE_SCHEMA_FAMILY: &str = "open-why";
 pub const STORE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_SUPERSESSION_CHAIN: usize = 64;
 pub const MAX_HISTORY_PAGE_RECORDS: usize = 3;
 pub const MAX_COMMIT_LINKS_PAGE_RECORDS: usize = 20;
+pub const MAX_COMMIT_LINK_HASH_BYTES: usize = 128;
+pub const MAX_COMMIT_LINK_SUBJECT_BYTES: usize = 4 * 1024;
+pub const MAX_COMMIT_LINK_SCOPE_BYTES: usize = 4 * 1024;
+pub const MAX_COMMIT_LINK_RECORD_ID_BYTES: usize = 512;
+pub const MAX_STORE_INSTANCE_ID_BYTES: usize = 128;
 pub(crate) const MAX_HISTORY_PAGE_SOURCE_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const MAX_HISTORY_PAGE_GIT_REFS: usize = 300;
-pub(crate) const MAX_COMMIT_LINK_SUBJECT_BYTES: usize = 4 * 1024;
-pub(crate) const MAX_COMMIT_LINK_RECORD_ID_BYTES: usize = 512;
 pub(crate) const MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +80,7 @@ fn default_scope() -> String {
 }
 
 /// A git commit bound to a decision (the "why" for that commit).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitRef {
     pub commit_hash: String,
     pub commit_subject: String,
@@ -178,6 +182,40 @@ pub enum EvidenceIdentityResolution {
     Error {
         contract: &'static str,
         code: EvidenceIdentityErrorCode,
+        message: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopedCommitLinkOutcome {
+    Created,
+    ExactReplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopedCommitLinkErrorCode {
+    InvalidRequest,
+    EvidenceUnavailable,
+    LinkConflict,
+    StoreUnavailable,
+}
+
+/// Result of an authority-bound commit-link write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ScopedCommitLinkResolution {
+    Ok {
+        contract: &'static str,
+        outcome: ScopedCommitLinkOutcome,
+        evidence_identity: EvidenceIdentity,
+        git_ref: GitRef,
+    },
+    Error {
+        contract: &'static str,
+        code: ScopedCommitLinkErrorCode,
         message: String,
         retryable: bool,
     },
