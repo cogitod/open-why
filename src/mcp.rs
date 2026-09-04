@@ -31,6 +31,7 @@ const MAX_IMPORT_ROWS: usize = 1000;
 const MAX_IMPORT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_GIT_REFS: usize = 100;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_OPERATOR_DIAGNOSTIC_BYTES: usize = 2 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolKind {
@@ -129,7 +130,8 @@ impl ToolError {
     }
 
     fn internal(error: impl std::fmt::Display) -> Self {
-        Self::new("internal", format!("internal tool failure: {error}"))
+        emit_operator_diagnostic("internal tool failure", error);
+        Self::new("internal", "internal tool failure")
     }
 
     fn resolution(payload: Value) -> Self {
@@ -307,8 +309,9 @@ fn tool_response(id: Value, result: ToolResult) -> Value {
         Err(error) => (error.payload, true),
     };
     let text = serde_json::to_string(&payload).unwrap_or_else(|error| {
+        emit_operator_diagnostic("serialize tool response", error);
         format!(
-            "{{\"contract\":\"{MCP_ERROR_CONTRACT}\",\"status\":\"error\",\"code\":\"internal\",\"message\":\"serialize tool response: {error}\",\"retryable\":false}}"
+            "{{\"contract\":\"{MCP_ERROR_CONTRACT}\",\"status\":\"error\",\"code\":\"internal\",\"message\":\"internal tool failure\",\"retryable\":false}}"
         )
     });
     json!({
@@ -316,6 +319,18 @@ fn tool_response(id: Value, result: ToolResult) -> Value {
         "id":id,
         "result":{"content":[{"type":"text","text":text}],"isError":is_error}
     })
+}
+
+fn emit_operator_diagnostic(context: &str, error: impl std::fmt::Display) {
+    let mut diagnostic = format!("[open-why] {context}: {error}");
+    if diagnostic.len() > MAX_OPERATOR_DIAGNOSTIC_BYTES {
+        let mut end = MAX_OPERATOR_DIAGNOSTIC_BYTES;
+        while !diagnostic.is_char_boundary(end) {
+            end -= 1;
+        }
+        diagnostic.truncate(end);
+    }
+    eprintln!("{diagnostic}");
 }
 
 fn tool_wire_size(payload: &Value) -> std::result::Result<usize, ToolError> {
@@ -1220,13 +1235,18 @@ fn feedback_tool(store: &db::Store, args: &Value) -> ToolResult {
     {
         return Err(ToolError::new(
             "not_found",
-            format!("record `{id}` was not found in scope `{scope}`"),
+            "record is unavailable in the requested scope",
         ));
     }
     let effectiveness = store
         .feedback(id, helpful)
         .map_err(ToolError::internal)?
-        .ok_or_else(|| ToolError::new("not_current", format!("record `{id}` is not current")))?;
+        .ok_or_else(|| {
+            ToolError::new(
+                "not_current",
+                "record is unavailable in the requested scope",
+            )
+        })?;
     Ok(json!({
         "status":"ok",
         "scope":scope,
@@ -1241,14 +1261,16 @@ mod tests {
     use super::*;
 
     fn temp_store() -> db::Store {
-        let path = std::env::temp_dir().join(format!(
-            "open-why-mcp-unit-{}-{}.db",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-mcp-unit-{}-{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
         db::Store::open_with_store_instance_id(&path, "provider:mcp-unit").unwrap()
     }
 

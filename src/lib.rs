@@ -12,17 +12,28 @@
 //! arm (FTS5-style BM25), weighted by importance and effectiveness and decayed by
 //! Ebbinghaus recency with spaced-repetition stability.
 //!
-//! It ships as a library, a CLI, and an MCP server, all over one local SQLite store.
+//! The library and MCP server are the primary interfaces. A CLI provides convenient setup and
+//! inspection over the same local SQLite store.
 //!
 //! ## Library
 //!
 //! ```no_run
 //! use open_why::Store;
+//! use std::path::Path;
 //!
-//! let store = Store::open_default()?;                 // wires an embedder from the env
+//! let store = Store::open_with_store_instance_id(
+//!     Path::new("/path/to/open-why.db"),
+//!     "my-app:open-why:replace-with-unique-id",
+//! )?;
 //! let hits = store.search("why sqlite", &["my-project"], &[], 10)?;
 //! # Ok::<(), anyhow::Error>(())
 //! ```
+//!
+//! Mint the store identity once, keep it stable, and use `Store::open` for later lexical-only
+//! opens. `Store::open_default` reads the first-binding identity from
+//! `OPEN_WHY_STORE_INSTANCE_ID` and wires an embedder from the environment.
+//! On Unix, store opens reject symbolic links in the database path and its directory
+//! components.
 //!
 //! With no embedder configured (`OPEN_WHY_EMBED_MODEL_PATH` / `OPEN_WHY_EMBED_URL`),
 //! search is lexical-first; with one, the semantic arm is active.
@@ -32,6 +43,7 @@ pub mod db;
 pub mod embed;
 pub mod mcp;
 pub mod miner;
+mod private_store_path;
 pub mod relevance;
 pub mod search;
 pub mod store;

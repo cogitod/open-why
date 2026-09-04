@@ -259,6 +259,7 @@ pub fn default_path() -> PathBuf {
 pub struct Store {
     conn: Connection,
     embedder: Option<Box<dyn Embedder>>,
+    _store_parent: Option<std::fs::File>,
 }
 
 struct HistoryNode {
@@ -321,29 +322,31 @@ struct ExternalCaptureRequest<'a> {
 /// Inspect an existing store without creating or migrating any filesystem or
 /// database state.
 pub fn inspect_store(path: &Path) -> Result<StoreCompatibility> {
-    if !path.exists() {
+    let Some(prepared) = crate::private_store_path::prepare(path, false, false)? else {
         return Ok(StoreCompatibility::Missing);
-    }
-    if store_may_have_live_wal(path)? {
+    };
+    let anchored_path = prepared.sqlite_path();
+    if store_may_have_live_wal(anchored_path)? {
         return Ok(incompatible(
             StoreCompatibilityErrorCode::LiveWalIndeterminate,
             "store may have committed state in a live WAL and cannot be inspected without side effects",
             None,
         ));
     }
-    let uri = immutable_sqlite_uri(path);
-    let conn = Connection::open_with_flags(
-        uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .with_context(|| format!("inspect {}", path.display()))?;
+    let uri = immutable_sqlite_uri(anchored_path);
+    let inspect_flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_URI;
+    #[cfg(unix)]
+    let inspect_flags = inspect_flags | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let conn = prepared
+        .open_connection(|_| Connection::open_with_flags(uri, inspect_flags))
+        .with_context(|| format!("inspect {}", path.display()))?;
     conn.pragma_update(None, "query_only", true)?;
     let tx = conn.unchecked_transaction()?;
     let compatibility = inspect_connection(&tx);
     tx.rollback()?;
-    if store_may_have_live_wal(path)? {
+    if store_may_have_live_wal(anchored_path)? {
         return Ok(incompatible(
             StoreCompatibilityErrorCode::LiveWalIndeterminate,
             "store entered WAL mode during read-only inspection",
@@ -396,14 +399,30 @@ impl Store {
         embedder: Option<Box<dyn Embedder>>,
         store_instance_id: Option<&str>,
     ) -> Result<Store> {
-        if !path.exists() {
-            require_store_instance_id(store_instance_id)?;
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        let store = Store { conn, embedder };
+        let prepared = match crate::private_store_path::prepare(path, false, true)? {
+            Some(prepared) => prepared,
+            None => {
+                require_store_instance_id(store_instance_id)?;
+                crate::private_store_path::prepare(path, true, true)?
+                    .context("new store path was not prepared")?
+            }
+        };
+        #[cfg(unix)]
+        let open_flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        #[cfg(not(unix))]
+        let open_flags = OpenFlags::default();
+        let conn = prepared
+            .open_connection(|sqlite_path| Connection::open_with_flags(sqlite_path, open_flags))
+            .with_context(|| format!("open {}", path.display()))?;
+        let store_parent = prepared.into_parent_guard();
+        let store = Store {
+            conn,
+            embedder,
+            _store_parent: store_parent,
+        };
         store.migrate_with_provider_identity(store_instance_id)?;
         Ok(store)
     }
@@ -2638,29 +2657,42 @@ impl Store {
     /// id is unknown or superseded.
     pub fn feedback(&self, id: &str, helpful: bool) -> Result<Option<f64>> {
         let delta = if helpful { 0.05 } else { -0.03 };
-        let updated = self.conn.execute(
+        let now = epoch_to_iso(now_epoch());
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let updated = tx.execute(
             "UPDATE decisions SET
                times_helpful = COALESCE(times_helpful, 0) + ?1,
                effectiveness = MIN(1.0, MAX(0.01, effectiveness + ?2)),
-               updated_at = datetime('now')
-             WHERE id = ?3 AND superseded_by IS NULL
-               AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
-               AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))",
-            params![if helpful { 1 } else { 0 }, delta, id],
+               updated_at = ?3
+             WHERE id = ?4 AND superseded_by IS NULL
+               AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch(?3))
+               AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch(?3))",
+            params![if helpful { 1 } else { 0 }, delta, now, id],
         )?;
         if updated == 0 {
+            tx.rollback()?;
             return Ok(None);
         }
-        let log_id = digest(&format!("{id}:{helpful}:{}", now_epoch()));
-        self.conn.execute(
-            "INSERT INTO feedback_log (id, memory_id, helpful, delta) VALUES (?1,?2,?3,?4)",
-            params![log_id, id, if helpful { 1 } else { 0 }, delta],
-        )?;
-        let eff: f64 = self.conn.query_row(
+        let mut logged = false;
+        for _ in 0..4 {
+            if tx.execute(
+                "INSERT OR IGNORE INTO feedback_log
+                   (id, memory_id, helpful, delta, created_at)
+                 VALUES (lower(hex(randomblob(16))), ?1, ?2, ?3, ?4)",
+                params![id, if helpful { 1 } else { 0 }, delta, now],
+            )? == 1
+            {
+                logged = true;
+                break;
+            }
+        }
+        anyhow::ensure!(logged, "could not allocate a unique feedback log identity");
+        let eff: f64 = tx.query_row(
             "SELECT effectiveness FROM decisions WHERE id=?1",
             params![id],
             |r| r.get(0),
         )?;
+        tx.commit()?;
         Ok(Some(eff))
     }
 }
@@ -3920,7 +3952,9 @@ mod tests {
         // A monotonic counter guarantees a unique dir even when parallel tests collide on the
         // same nanosecond timestamp.
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("open-why-test-{}-{n}", std::process::id()));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("open-why-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Store::open_with_embedder_and_store_instance_id(
             &dir.join("t.db"),
@@ -5223,10 +5257,12 @@ mod tests {
     #[test]
     fn current_evidence_uses_one_snapshot_then_observes_the_next_complete_snapshot() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-current-snapshot-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-current-snapshot-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("current.db");
         let store = Store::open_with_embedder_and_store_instance_id(
@@ -5570,10 +5606,12 @@ mod tests {
     #[test]
     fn rationale_history_uses_one_snapshot_and_bounds_selected_hydration() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-history-snapshot-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-history-snapshot-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.db");
         let store = Store::open_with_embedder_and_store_instance_id(
@@ -5992,10 +6030,12 @@ mod tests {
     #[test]
     fn scoped_commit_link_reports_held_writer_without_leaking_details() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-scoped-link-lock-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-scoped-link-lock-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("link.db");
         let store =
@@ -6056,10 +6096,12 @@ mod tests {
     #[test]
     fn concurrent_scoped_commit_links_never_overwrite() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-scoped-link-race-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-scoped-link-race-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("link.db");
         let provider = format!("provider:link-race:{n}");
@@ -6378,10 +6420,12 @@ mod tests {
     #[test]
     fn commit_links_use_one_snapshot_despite_concurrent_matching_insert() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-commit-links-snapshot-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-commit-links-snapshot-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("links.db");
         let store = Store::open_with_embedder_and_store_instance_id(
@@ -6555,10 +6599,12 @@ mod tests {
     #[test]
     fn migration_failure_rolls_back_every_foundation_effect_and_retries() {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "open-why-migration-rollback-{}-{n}",
-            std::process::id()
-        ));
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "open-why-migration-rollback-{}-{n}",
+                std::process::id()
+            ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("legacy.db");
         let conn = Connection::open(&path).unwrap();
@@ -6630,6 +6676,7 @@ mod tests {
         let store = Store {
             conn,
             embedder: None,
+            _store_parent: None,
         };
         let error = store
             .migrate_with_hook(Some("provider:rollback"), |_| {
