@@ -92,14 +92,14 @@ fn record(id: &str, content: String, successor: Option<&str>) -> ExternalDecisio
         valid_until: successor.map(|_| "2026-02-01T00:00:00Z".to_owned()),
         superseded_by: successor.map(str::to_owned),
         fact_key: None,
-        git_refs: if successor.is_none() {
-            vec![GitRef {
-                commit_hash: "0123456789abcdef".to_owned(),
-                commit_subject: "Apply the current rationale".to_owned(),
-            }]
-        } else {
-            Vec::new()
-        },
+        git_refs: vec![GitRef {
+            commit_hash: if successor.is_none() {
+                "0123456789abcdef".to_owned()
+            } else {
+                format!("commit-{id}")
+            },
+            commit_subject: format!("Apply rationale {id}"),
+        }],
     }
 }
 
@@ -108,6 +108,13 @@ fn initialize(server: &mut Server, id: u64) -> (String, String) {
         "jsonrpc":"2.0","id":id,"method":"initialize","params":{}
     }));
     assert_eq!(init["result"]["serverInfo"]["name"], "open-why");
+    let expected_contracts = json!([
+        "open-why.current-rationale/v1",
+        "open-why.rationale-history/v1"
+    ]);
+    let init_metadata = &init["result"]["capabilities"]["experimental"]["openWhy"];
+    assert_eq!(init_metadata["contract"], "open-why.current-rationale/v1");
+    assert_eq!(init_metadata["contracts"], expected_contracts);
     let init_digest = init["result"]["capabilities"]["experimental"]["openWhy"]["registryDigest"]
         .as_str()
         .unwrap()
@@ -119,6 +126,11 @@ fn initialize(server: &mut Server, id: u64) -> (String, String) {
         .as_str()
         .unwrap()
         .to_owned();
+    assert_eq!(
+        list["result"]["_meta"]["contract"],
+        "open-why.current-rationale/v1"
+    );
+    assert_eq!(list["result"]["_meta"]["contracts"], expected_contracts);
     assert_eq!(init_digest, list_digest);
     (
         init_digest,
@@ -135,11 +147,26 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
         store
             .import_external(&[
                 record(
-                    "stale-id",
-                    "retired rationale".to_owned(),
-                    Some("current-id"),
+                    "history-a",
+                    "retired rationale α".to_owned(),
+                    Some("history-b"),
                 ),
-                record("current-id", full_body.clone(), None),
+                record(
+                    "history-b",
+                    "second rationale β".to_owned(),
+                    Some("history-c"),
+                ),
+                record(
+                    "history-c",
+                    "third rationale γ".to_owned(),
+                    Some("history-d"),
+                ),
+                record(
+                    "history-d",
+                    "fourth rationale δ".to_owned(),
+                    Some("history-e"),
+                ),
+                record("history-e", full_body.clone(), None),
             ])
             .unwrap();
     }
@@ -160,6 +187,7 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
             "open-why_import",
             "open-why_search",
             "open-why_get",
+            "open-why_history",
             "open-why_link",
             "open-why_feedback",
         ]
@@ -182,14 +210,18 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
             json!({"query":"final rationale sentinel","scope":"scope-a","limit":10}),
         ),
         (
+            "open-why_history",
+            json!({"id":"history-a","scope":"scope-a","limit":3}),
+        ),
+        (
             "open-why_link",
-            json!({"commit":"fedcba9876543210","decision":"current-id","scope":"scope-a"}),
+            json!({"commit":"fedcba9876543210","decision":"history-e","scope":"scope-a"}),
         ),
         (
             "open-why_feedback",
-            json!({"id":"current-id","helpful":true,"scope":"scope-a"}),
+            json!({"id":"history-e","helpful":true,"scope":"scope-a"}),
         ),
-        ("open-why_get", json!({"id":"stale-id","scope":"scope-a"})),
+        ("open-why_get", json!({"id":"history-a","scope":"scope-a"})),
     ];
     let mut payloads = Vec::new();
     for (offset, (name, arguments)) in valid_calls.into_iter().enumerate() {
@@ -199,14 +231,98 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
     }
 
     let search = &payloads[4].1;
-    assert_eq!(search["results"][0]["id"], "current-id");
+    assert_eq!(search["results"][0]["id"], "history-e");
     assert_eq!(search["results"][0]["preview_truncated"], true);
     assert!(search["results"][0]["preview"].as_str().unwrap().len() <= 512);
 
-    let get = &payloads[7].1;
+    let history = &payloads[5].1;
+    assert_eq!(history["contract"], "open-why.rationale-history/v1");
+    assert_eq!(history["requested_id"], "history-a");
+    assert_eq!(history["page_start_id"], "history-a");
+    assert_eq!(history["complete"], false);
+    assert_eq!(history["next_cursor"], "history-d");
+    let first_records = history["records"].as_array().unwrap();
+    assert_eq!(first_records.len(), 3);
+    assert_eq!(first_records[0]["record"]["content"], "retired rationale α");
+    assert_eq!(first_records[1]["record"]["content"], "second rationale β");
+    assert_eq!(first_records[2]["record"]["content"], "third rationale γ");
+    assert!(first_records.iter().all(|item| item["git_refs"]
+        .as_array()
+        .is_some_and(|refs| refs.len() == 1)));
+
+    let (history_second, history_second_error) = server.call(
+        28,
+        "open-why_history",
+        json!({"id":"history-a","scope":"scope-a","limit":3,"cursor":"history-d"}),
+    );
+    assert!(!history_second_error);
+    assert_eq!(history_second["page_start_id"], "history-d");
+    assert_eq!(history_second["complete"], true);
+    assert_eq!(history_second["next_cursor"], Value::Null);
+    assert_eq!(
+        history_second["records"][0]["record"]["content"],
+        "fourth rationale δ"
+    );
+    assert_eq!(history_second["records"][1]["record"]["content"], full_body);
+    assert!(history_second["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["git_refs"]
+            .as_array()
+            .is_some_and(|refs| !refs.is_empty())));
+    let reconstructed: Vec<&str> = first_records
+        .iter()
+        .chain(history_second["records"].as_array().unwrap())
+        .map(|item| item["record"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        reconstructed,
+        [
+            "history-a",
+            "history-b",
+            "history-c",
+            "history-d",
+            "history-e"
+        ]
+    );
+
+    let history_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "open-why_history")
+        .unwrap();
+    assert_eq!(
+        history_tool["inputSchema"]["required"],
+        json!(["id", "scope"])
+    );
+    assert_eq!(
+        history_tool["inputSchema"]["properties"]["limit"]["maximum"],
+        3
+    );
+    assert_eq!(history_tool["inputSchema"]["additionalProperties"], false);
+
+    let (history_repeat, history_repeat_error) = server.call(
+        29,
+        "open-why_history",
+        json!({"id":"history-a","scope":"scope-a","limit":3}),
+    );
+    assert!(!history_repeat_error);
+    let mut first_history_without_clock = history.clone();
+    let mut repeat_history_without_clock = history_repeat;
+    first_history_without_clock
+        .as_object_mut()
+        .unwrap()
+        .remove("as_of");
+    repeat_history_without_clock
+        .as_object_mut()
+        .unwrap()
+        .remove("as_of");
+    assert_eq!(first_history_without_clock, repeat_history_without_clock);
+
+    let get = &payloads[8].1;
     assert_eq!(get["contract"], "open-why.current-rationale/v1");
-    assert_eq!(get["requested_id"], "stale-id");
-    assert_eq!(get["current_id"], "current-id");
+    assert_eq!(get["requested_id"], "history-a");
+    assert_eq!(get["current_id"], "history-e");
     assert_eq!(get["record"]["content"], full_body);
     assert!(get["record"]["updated_at"].is_string());
     assert!(get["record"]["access_count"].is_number());
@@ -216,13 +332,22 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
         .unwrap()
         .iter()
         .any(|git_ref| git_ref["commit_hash"] == "0123456789abcdef"));
-    assert_eq!(get["supersession_chain"], json!(["stale-id", "current-id"]));
+    assert_eq!(
+        get["supersession_chain"],
+        json!([
+            "history-a",
+            "history-b",
+            "history-c",
+            "history-d",
+            "history-e"
+        ])
+    );
     assert!(get["as_of"].as_str().unwrap().ends_with('Z'));
 
     let (repeat, repeat_error) = server.call(
         30,
         "open-why_get",
-        json!({"id":"stale-id","scope":"scope-a"}),
+        json!({"id":"history-a","scope":"scope-a"}),
     );
     assert!(!repeat_error);
     let mut first_without_clock = get.clone();
@@ -238,7 +363,7 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
     let (wrong_scope, wrong_scope_error) = server.call(
         31,
         "open-why_get",
-        json!({"id":"stale-id","scope":"scope-b"}),
+        json!({"id":"history-a","scope":"scope-b"}),
     );
     assert!(wrong_scope_error);
     assert_eq!(wrong_scope["code"], "not_found");
@@ -252,6 +377,14 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
     assert_eq!(missing["contract"], "open-why.current-rationale/v1");
     assert_eq!(missing["code"], "not_found");
     assert!(missing["as_of"].as_str().unwrap().ends_with('Z'));
+    let (invalid_cursor, invalid_cursor_error) = server.call(
+        37,
+        "open-why_history",
+        json!({"id":"history-a","scope":"scope-a","cursor":"captured-id"}),
+    );
+    assert!(invalid_cursor_error);
+    assert_eq!(invalid_cursor["contract"], "open-why.rationale-history/v1");
+    assert_eq!(invalid_cursor["code"], "invalid_cursor");
     let (unknown, unknown_error) = server.call(32, "open-why_hidden", json!({}));
     assert!(unknown_error);
     assert_eq!(unknown["code"], "unknown_tool");

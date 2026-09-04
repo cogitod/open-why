@@ -69,7 +69,14 @@ for h in hits {
 
 `why serve` speaks stdio MCP: `open-why_ask`, `open-why_index`,
 `open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`,
-`open-why_link`, `open-why_feedback`.
+`open-why_history`, `open-why_link`, `open-why_feedback`.
+
+`open-why_get` resolves a stable ID to the complete current rationale under the
+`open-why.current-rationale/v1` contract. `open-why_history` pages forward from
+that same ID through its exact supersession chain under
+`open-why.rationale-history/v1`; every returned record is complete and carries
+its own Git references. History cursors are stable record IDs from the prior
+page, not opaque offsets.
 
 ```jsonc
 // opencode: ~/.config/opencode/opencode.jsonc

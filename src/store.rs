@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_RATIONALE_CONTRACT: &str = "open-why.current-rationale/v1";
+pub const RATIONALE_HISTORY_CONTRACT: &str = "open-why.rationale-history/v1";
 pub const MAX_SUPERSESSION_CHAIN: usize = 64;
+pub const MAX_HISTORY_PAGE_RECORDS: usize = 3;
+pub(crate) const MAX_HISTORY_PAGE_SOURCE_BYTES: usize = 3 * 1024 * 1024;
+pub(crate) const MAX_HISTORY_PAGE_GIT_REFS: usize = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
@@ -104,6 +108,52 @@ pub enum CurrentRecordResolution {
         as_of: String,
         requested_id: String,
         code: CurrentRecordErrorCode,
+        message: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RationaleHistoryErrorCode {
+    NotFound,
+    BrokenChain,
+    Cycle,
+    TraversalLimit,
+    InvalidTemporalData,
+    InvalidCursor,
+    ResponseTooLarge,
+}
+
+/// One complete historical record and the Git evidence bound to that exact
+/// point in the supersession chain.
+#[derive(Debug, Clone, Serialize)]
+pub struct RationaleHistoryRecord {
+    pub record: Box<Record>,
+    pub git_refs: Vec<GitRef>,
+}
+
+/// A stable-ID page over one exact forward supersession chain.
+///
+/// `cursor`, when present, names the first record in the returned page. It is
+/// valid only when it occurs on the chain rooted at `requested_id`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum RationaleHistoryResolution {
+    Ok {
+        contract: &'static str,
+        as_of: String,
+        requested_id: String,
+        page_start_id: String,
+        records: Vec<RationaleHistoryRecord>,
+        next_cursor: Option<String>,
+        complete: bool,
+    },
+    Error {
+        contract: &'static str,
+        as_of: String,
+        requested_id: String,
+        code: RationaleHistoryErrorCode,
         message: String,
         retryable: bool,
     },

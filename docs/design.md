@@ -44,7 +44,11 @@ Four primitives, each small and composable:
 - **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
   hydrates the *current* version; history stays reachable. `--historical` (search,
   get, and MCP) reaches past supersession and walks the chain, so "what changed and
-  why" is answerable.
+  why" is answerable. MCP consumers can page an exact chain with
+  `open-why_history`: its cursor is the next stable record ID, records remain in
+  predecessor-to-successor order, and every record carries its own Git evidence.
+  History v1 validates each record's timestamp syntax and positive interval; it
+  does not certify that adjacent intervals are contiguous or non-overlapping.
 - **Hybrid recall** — reciprocal-rank fusion of a **semantic arm** (local on-device
   `all-MiniLM-L6-v2` embeddings) and a **lexical arm** (FTS5-style BM25 with
   title/content column weights), weighted by importance and effectiveness and

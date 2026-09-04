@@ -1,6 +1,7 @@
 use crate::store::{
-    self, CurrentRecordErrorCode, CurrentRecordResolution, ExternalDecision, Record,
-    CURRENT_RATIONALE_CONTRACT, MAX_SUPERSESSION_CHAIN,
+    self, CurrentRecordErrorCode, CurrentRecordResolution, ExternalDecision,
+    RationaleHistoryErrorCode, RationaleHistoryResolution, Record, CURRENT_RATIONALE_CONTRACT,
+    MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
 };
 use crate::{db, miner};
 use anyhow::Result;
@@ -9,6 +10,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 const MCP_ERROR_CONTRACT: &str = "open-why.mcp-tool-error/v1";
+const MCP_CONTRACTS: &[&str] = &[CURRENT_RATIONALE_CONTRACT, RATIONALE_HISTORY_CONTRACT];
 const MAX_QUERY_BYTES: usize = 4 * 1024;
 const MAX_RESULT_COUNT: usize = 100;
 const MAX_PREVIEW_BYTES: usize = 512;
@@ -31,6 +33,7 @@ enum ToolKind {
     Import,
     Search,
     Get,
+    History,
     Link,
     Feedback,
 }
@@ -72,6 +75,11 @@ const TOOL_SPECS: &[ToolSpec] = &[
         name: "open-why_get",
         description: "Resolve an exact stable ID to its complete current rationale and evidence.",
         kind: ToolKind::Get,
+    },
+    ToolSpec {
+        name: "open-why_history",
+        description: "Page one exact supersession chain with complete records and Git evidence.",
+        kind: ToolKind::History,
     },
     ToolSpec {
         name: "open-why_link",
@@ -204,6 +212,15 @@ fn input_schema(kind: ToolKind) -> Value {
             json!({
                 "id":{"type":"string","maxLength":MAX_ID_BYTES},
                 "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES}
+            }),
+            &["id", "scope"],
+        ),
+        ToolKind::History => object_schema(
+            json!({
+                "id":{"type":"string","maxLength":MAX_ID_BYTES},
+                "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
+                "limit":{"type":"integer","minimum":1,"maximum":MAX_HISTORY_PAGE_RECORDS},
+                "cursor":{"type":"string","maxLength":MAX_ID_BYTES}
             }),
             &["id", "scope"],
         ),
@@ -359,6 +376,7 @@ fn handle_message(store: &db::Store, message: &Value, as_of: i64) -> Option<Valu
                     "tools":{"listChanged":false},
                     "experimental":{"openWhy":{
                         "contract":CURRENT_RATIONALE_CONTRACT,
+                        "contracts":MCP_CONTRACTS,
                         "registryDigest":registry_digest()
                     }}
                 },
@@ -370,6 +388,7 @@ fn handle_message(store: &db::Store, message: &Value, as_of: i64) -> Option<Valu
             "id":id,
             "result":{"tools":registry_tools(),"_meta":{
                 "contract":CURRENT_RATIONALE_CONTRACT,
+                "contracts":MCP_CONTRACTS,
                 "registryDigest":registry_digest()
             }}
         })),
@@ -449,6 +468,7 @@ fn dispatch_tool(store: &db::Store, name: &str, args: &Value, as_of: i64) -> Too
         ToolKind::Import => import_tool(store, args),
         ToolKind::Search => search_tool(store, args),
         ToolKind::Get => with_as_of(get_tool(store, args, as_of), as_of),
+        ToolKind::History => with_as_of(history_tool(store, args, as_of), as_of),
         ToolKind::Link => link_tool(store, args),
         ToolKind::Feedback => feedback_tool(store, args),
     }
@@ -963,6 +983,53 @@ fn get_tool(store: &db::Store, args: &Value, as_of: i64) -> ToolResult {
     }
 }
 
+fn history_tool(store: &db::Store, args: &Value, as_of: i64) -> ToolResult {
+    let scope = explicit_scope(args)?;
+    let id = required_string(args, "id", MAX_ID_BYTES)?;
+    let cursor = optional_string(args, "cursor", MAX_ID_BYTES)?;
+    let limit = match args.get("limit") {
+        None => MAX_HISTORY_PAGE_RECORDS,
+        Some(value) => {
+            let Some(limit) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+                return Err(ToolError::new(
+                    "invalid_arguments",
+                    "`limit` must be an integer",
+                ));
+            };
+            if !(1..=MAX_HISTORY_PAGE_RECORDS).contains(&limit) {
+                return Err(ToolError::new(
+                    "limit_exceeded",
+                    format!("`limit` must be from 1 to {MAX_HISTORY_PAGE_RECORDS}"),
+                ));
+            }
+            limit
+        }
+    };
+
+    let resolution = store
+        .get_rationale_history_at(id, scope, cursor, limit, as_of, MAX_SUPERSESSION_CHAIN)
+        .map_err(ToolError::internal)?;
+    let payload = serde_json::to_value(&resolution).map_err(ToolError::internal)?;
+    if tool_wire_size(&payload)? > MAX_RESPONSE_BYTES {
+        let oversized = RationaleHistoryResolution::Error {
+            contract: RATIONALE_HISTORY_CONTRACT,
+            as_of: db::epoch_to_iso(as_of),
+            requested_id: id.to_owned(),
+            code: RationaleHistoryErrorCode::ResponseTooLarge,
+            message: "exact history page cannot be returned within the response byte limit"
+                .to_owned(),
+            retryable: false,
+        };
+        return Err(ToolError::resolution(
+            serde_json::to_value(oversized).map_err(ToolError::internal)?,
+        ));
+    }
+    match resolution {
+        RationaleHistoryResolution::Ok { .. } => Ok(payload),
+        RationaleHistoryResolution::Error { .. } => Err(ToolError::resolution(payload)),
+    }
+}
+
 fn link_tool(store: &db::Store, args: &Value) -> ToolResult {
     let scope = explicit_scope(args)?;
     let decision = required_string(args, "decision", MAX_ID_BYTES)?;
@@ -1305,5 +1372,73 @@ mod tests {
         assert_eq!(error.payload["contract"], MCP_ERROR_CONTRACT);
         assert_eq!(error.payload["code"], "response_too_large");
         assert_eq!(error.payload["as_of"], "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn exact_history_enforces_page_bounds_and_returns_typed_oversize_failure() {
+        let store = temp_store();
+        let record = ExternalDecision {
+            id: "large-history-record".to_owned(),
+            kind: "decision".to_owned(),
+            title: "large history record".to_owned(),
+            content: "\0".repeat(750_000),
+            importance: 0.5,
+            source: "synthetic".to_owned(),
+            author: "tester".to_owned(),
+            date: "2026-01-01".to_owned(),
+            updated_at: None,
+            accessed_count: None,
+            times_injected: None,
+            effectiveness: None,
+            tags: None,
+            scope: "scope-a".to_owned(),
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            fact_key: None,
+            git_refs: Vec::new(),
+        };
+        store.import_external(&[record]).unwrap();
+
+        for invalid_limit in [json!(0), json!(4), json!("3")] {
+            let error = dispatch_tool(
+                &store,
+                "open-why_history",
+                &json!({
+                    "id":"large-history-record",
+                    "scope":"scope-a",
+                    "limit":invalid_limit
+                }),
+                1_700_000_000,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error.payload["code"].as_str(),
+                Some("limit_exceeded" | "invalid_arguments")
+            ));
+        }
+        let unknown = dispatch_tool(
+            &store,
+            "open-why_history",
+            &json!({
+                "id":"large-history-record",
+                "scope":"scope-a",
+                "unexpected":"forbidden"
+            }),
+            1_700_000_000,
+        )
+        .unwrap_err();
+        assert_eq!(unknown.payload["code"], "invalid_arguments");
+
+        let oversized = dispatch_tool(
+            &store,
+            "open-why_history",
+            &json!({"id":"large-history-record","scope":"scope-a"}),
+            1_700_000_000,
+        )
+        .unwrap_err();
+        assert_eq!(oversized.payload["contract"], RATIONALE_HISTORY_CONTRACT);
+        assert_eq!(oversized.payload["code"], "response_too_large");
+        assert_eq!(oversized.payload["as_of"], "2023-11-14T22:13:20Z");
     }
 }
