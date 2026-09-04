@@ -20,25 +20,28 @@ needed:
 ORT_LIB_LOCATION=/path/to/onnxruntime cargo build --release
 ```
 
-Enable the pre-commit leak-check hook once per clone:
+Enable the pre-commit checks once per clone with Lefthook:
 
 ```bash
-git config core.hooksPath hooks
+lefthook install
 ```
 
-It scans staged files for secrets, unreviewed exports of real records, private
-filesystem paths, and references to downstream/private implementations. See
-`hooks/check-leaks.sh`. Reviewed synthetic UUID fixtures may be listed in
+The checks scan exact staged blobs for leaks and enforce a 999-line maximum for
+tracked Rust files under `src/` and `tests/`. There are no generated-file
+exclusions. Reviewed synthetic UUID fixtures may be listed in
 `hooks/leak-allowlist.txt`; secrets and provenance leaks may not be allowlisted.
 
 ## Before opening a PR
 
-Run exactly what CI runs, locally, first:
+Run the main CI checks locally first:
 
 ```bash
 cargo fmt --check
+cargo check
+cargo clippy --all-targets -- -D warnings
 cargo clippy --release --all-targets -- -D warnings
 cargo test
+bash scripts/check-rust-loc.sh tracked
 ```
 
 If your change touches ranking (`src/db.rs`, `src/relevance.rs`) and you have your own
