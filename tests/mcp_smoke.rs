@@ -1,6 +1,7 @@
 //! End-to-end MCP contract tests against the real `why serve` process.
 
 use open_why::{ExternalDecision, GitRef, Store};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -137,6 +138,115 @@ fn initialize(server: &mut Server, id: u64) -> (String, String) {
         init_digest,
         serde_json::to_string(&list["result"]["tools"]).unwrap(),
     )
+}
+
+#[test]
+fn exact_get_real_process_hides_cross_scope_identity_and_existence() {
+    let foreign_path = unique_temp_db("scoped-current-foreign");
+    let absent_path = unique_temp_db("scoped-current-absent");
+    let scoped_record =
+        |id: &str, successor: Option<&str>, scope: &str, content: &str| ExternalDecision {
+            id: id.to_owned(),
+            kind: "decision".to_owned(),
+            title: format!("Rationale {id}"),
+            content: content.to_owned(),
+            importance: 0.8,
+            source: "synthetic-fixture".to_owned(),
+            author: "test-author".to_owned(),
+            date: "2026-02-01".to_owned(),
+            updated_at: None,
+            accessed_count: None,
+            times_injected: None,
+            effectiveness: None,
+            tags: None,
+            scope: scope.to_owned(),
+            valid_from: Some("2026-01-01T00:00:00Z".to_owned()),
+            valid_until: successor.map(|_| "2026-02-01T00:00:00Z".to_owned()),
+            superseded_by: successor.map(str::to_owned),
+            fact_key: None,
+            git_refs: vec![GitRef {
+                commit_hash: format!("private-commit-{id}"),
+                commit_subject: format!("Private evidence {id}"),
+            }],
+        };
+    for path in [&foreign_path, &absent_path] {
+        Store::open(path)
+            .unwrap()
+            .import_external(&[
+                scoped_record("cross-root", Some("middle"), "scope-a", "root body"),
+                scoped_record("middle", Some("hidden-successor"), "scope-a", "middle body"),
+            ])
+            .unwrap();
+    }
+    Store::open(&foreign_path)
+        .unwrap()
+        .import_external(&[
+            scoped_record(
+                "hidden-successor",
+                None,
+                "scope-b",
+                "foreign body 2099-01-01T00:00:00Z",
+            ),
+            scoped_record("same-root", None, "scope-b", "wrong-scope root body"),
+        ])
+        .unwrap();
+    Connection::open(&foreign_path)
+        .unwrap()
+        .execute(
+            "UPDATE decisions
+             SET content=CAST(zeroblob(8388608) AS TEXT), importance=X'FF', author=X'FF',
+                 superseded_by=X'FF', valid_from=X'FF', valid_until=42
+             WHERE id IN ('hidden-successor','same-root')",
+            [],
+        )
+        .unwrap();
+
+    let foreign_watch = Connection::open(&foreign_path).unwrap();
+    let absent_watch = Connection::open(&absent_path).unwrap();
+    let data_version = |connection: &Connection| {
+        connection
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let mut foreign_server = Server::spawn(&foreign_path);
+    let mut absent_server = Server::spawn(&absent_path);
+    initialize(&mut foreign_server, 100);
+    initialize(&mut absent_server, 200);
+    let foreign_version = data_version(&foreign_watch);
+    let absent_version = data_version(&absent_watch);
+
+    let normalize_as_of = |mut value: Value| {
+        value["as_of"] = Value::String("normalized".to_owned());
+        value
+    };
+    for (id, expected_code) in [("same-root", "not_found"), ("cross-root", "broken_chain")] {
+        let (foreign, foreign_error) =
+            foreign_server.call(300, "open-why_get", json!({"id":id,"scope":"scope-a"}));
+        let (absent, absent_error) =
+            absent_server.call(400, "open-why_get", json!({"id":id,"scope":"scope-a"}));
+        assert!(foreign_error && absent_error);
+        assert_eq!(foreign["contract"], "open-why.current-rationale/v1");
+        assert_eq!(foreign["code"], expected_code);
+        assert_eq!(normalize_as_of(foreign.clone()), normalize_as_of(absent));
+        let wire = serde_json::to_string(&foreign).unwrap();
+        for secret in [
+            "hidden-successor",
+            "2099-01-01T00:00:00Z",
+            "foreign body",
+            "private-commit-hidden-successor",
+            "Private evidence hidden-successor",
+            "wrong-scope root body",
+        ] {
+            assert!(!wire.contains(secret), "MCP error leaked {secret}");
+        }
+    }
+    assert_eq!(data_version(&foreign_watch), foreign_version);
+    assert_eq!(data_version(&absent_watch), absent_version);
+
+    foreign_server.finish();
+    absent_server.finish();
+    std::fs::remove_dir_all(foreign_path.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(absent_path.parent().unwrap()).unwrap();
 }
 
 #[test]
