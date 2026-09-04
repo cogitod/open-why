@@ -9,8 +9,9 @@ fn unique_temp_db() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("open-why-cli-link-{}-{nanos}", std::process::id()));
+    let dir = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("open-why-cli-link-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("test.db")
 }

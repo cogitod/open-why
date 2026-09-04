@@ -1,8 +1,9 @@
 # open-why
 
-open-why is a local MCP server that lets an LLM ask why code decisions were made.
-It indexes Git history and decision documents, stores rationale in SQLite, and
-returns scoped records with source metadata.
+open-why is a Rust library and local MCP server that lets an LLM ask why code
+decisions were made. It indexes Git history and decision documents, stores
+rationale in SQLite, and returns scoped records with source metadata. A CLI is
+included as a convenience for setup and inspection.
 
 ## What the LLM gets
 
@@ -51,9 +52,16 @@ Configure your MCP client to run the installed binary:
 ```json
 {
   "command": "/path/to/why",
-  "args": ["serve"]
+  "args": ["serve"],
+  "env": {
+    "OPEN_WHY_STORE_INSTANCE_ID": "your-client:open-why:replace-with-unique-id"
+  }
 }
 ```
+
+Choose the store identity once, make it unique to this database, and keep it
+stable in the client configuration. The first launch binds the new database to
+that identity. Later launches verify the same identity before opening it.
 
 Then ask the LLM a question about the repository. The MCP call requires an
 absolute path:
@@ -115,9 +123,9 @@ return rationale bodies or rewrite IDs to current successors.
 Its cursor is the inclusive first record of the next page. Each page is a fresh,
 coherent snapshot. Pass a returned ID to `open-why_get` to resolve current rationale.
 
-## CLI
+## CLI convenience
 
-The same store is available without MCP:
+The same store is available from a terminal for setup and inspection:
 
 ```bash
 why "why is the sandbox separate?"                         # index if needed, then ask
@@ -140,9 +148,13 @@ Run `why --help` or `why <command> --help` for all arguments.
 
 ```rust
 use open_why::Store;
+use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
-    let store = Store::open_default()?;
+    let store = Store::open_with_store_instance_id(
+        Path::new("/path/to/open-why.db"),
+        "my-app:open-why:replace-with-unique-id",
+    )?;
     let hits = store.search("why sqlite", &["my-project"], &[], 10)?;
     for hit in hits {
         println!("{}: {}", hit.subject, hit.date);
@@ -151,11 +163,11 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-`Store::open_default` uses the configured embedder and default database path.
-Set `OPEN_WHY_STORE_INSTANCE_ID` when that path may need its first binding or a
-migration. `Store::open` reopens an already-bound database with lexical search;
-new databases use `Store::open_with_store_instance_id` and an explicit identity
-minted by the host.
+Mint one stable, unique identity for each database. New databases use
+`Store::open_with_store_instance_id`; `Store::open` reopens an already-bound
+database with lexical search. `Store::open_default` uses the configured embedder
+and default database path, and reads the required first-binding identity from
+`OPEN_WHY_STORE_INSTANCE_ID`.
 
 Library hosts can inspect a database before opening it:
 
@@ -217,6 +229,10 @@ the scoped method.
 | `OPEN_WHY_EMBED_API_KEY=...` | Send a bearer token to the remote embedding endpoint. |
 | `OPEN_WHY_DEBUG_RANK=1` | Print ranking diagnostics to standard error. |
 | `ORT_LIB_LOCATION=/path/to/onnxruntime` | Build against an installed ONNX Runtime. |
+
+On Unix, a database path must not contain symbolic-link directory components or
+name a symbolic-link file. Resolve trusted path aliases before the first launch,
+then keep the same concrete path in the client configuration.
 
 Without embedding configuration, open-why uses a previously fetched local model if
 present. Otherwise, search remains lexical-first. `why fetch-model` stores

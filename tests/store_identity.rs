@@ -13,6 +13,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
+#[cfg(unix)]
+use std::os::unix::fs::{symlink, PermissionsExt};
+
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 type SupersessionSnapshotRow = (String, String, Option<String>, Option<String>, String);
@@ -158,8 +161,9 @@ fn assert_cli_cycle_rejected(
 
 fn temp_dir(label: &str) -> PathBuf {
     let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path =
-        std::env::temp_dir().join(format!("open-why-{label}-{}-{serial}", std::process::id()));
+    let path = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("open-why-{label}-{}-{serial}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     path
 }
@@ -274,6 +278,355 @@ fn file_state(path: &Path) -> Option<FileState> {
     })
 }
 
+fn assert_canonical_utc(value: &str) {
+    let bytes = value.as_bytes();
+    assert_eq!(bytes.len(), 20, "expected second-resolution UTC: {value}");
+    assert_eq!(bytes[4], b'-');
+    assert_eq!(bytes[7], b'-');
+    assert_eq!(bytes[10], b'T');
+    assert_eq!(bytes[13], b':');
+    assert_eq!(bytes[16], b':');
+    assert_eq!(bytes[19], b'Z');
+    assert!(bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| ![4, 7, 10, 13, 16, 19].contains(index))
+        .all(|(_, byte)| byte.is_ascii_digit()));
+}
+
+#[cfg(unix)]
+#[test]
+fn new_store_paths_are_private_without_changing_existing_modes() {
+    let root = temp_dir("store-permissions");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let new_parent = root.join("new").join("nested");
+    let new_path = new_parent.join("store.db");
+    let store = Store::open_with_store_instance_id(&new_path, "provider:new-permissions").unwrap();
+    drop(store);
+
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&root), 0o751);
+    assert_eq!(mode(&root.join("new")), 0o700);
+    assert_eq!(mode(&new_parent), 0o700);
+    assert_eq!(mode(&new_path), 0o600);
+
+    let existing_parent = root.join("existing");
+    std::fs::create_dir(&existing_parent).unwrap();
+    std::fs::set_permissions(&existing_parent, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let existing_path = existing_parent.join("store.db");
+    std::fs::File::create(&existing_path).unwrap();
+    std::fs::set_permissions(&existing_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let store = Store::open_with_store_instance_id(&existing_path, "provider:existing-permissions")
+        .unwrap();
+    drop(store);
+    assert_eq!(mode(&existing_parent), 0o750);
+    assert_eq!(mode(&existing_path), 0o640);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_store_rejects_symlinked_parent_and_leaf_without_external_effects() {
+    let root = temp_dir("store-symlink-rejection");
+    let outside = root.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let parent_link = root.join("parent-link");
+    symlink(&outside, &parent_link).unwrap();
+
+    let parent_result = Store::open_with_store_instance_id(
+        &parent_link.join("store.db"),
+        "provider:symlink-parent",
+    );
+    assert!(parent_result.is_err());
+    assert!(!outside.join("store.db").exists());
+    assert_eq!(
+        std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+        0o751
+    );
+
+    let outside_file = outside.join("outside.db");
+    std::fs::File::create(&outside_file).unwrap();
+    std::fs::set_permissions(&outside_file, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let leaf_link = root.join("leaf.db");
+    symlink(&outside_file, &leaf_link).unwrap();
+    let leaf_result = Store::open_with_store_instance_id(&leaf_link, "provider:symlink-leaf");
+    assert!(leaf_result.is_err());
+    assert_eq!(
+        std::fs::metadata(&outside_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    assert_eq!(std::fs::metadata(&outside_file).unwrap().len(), 0);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_store_rejects_symlinked_parent_without_external_effects() {
+    let root = temp_dir("existing-store-symlink-rejection");
+    let outside = root.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let outside_path = outside.join("store.db");
+    let provider = "provider:existing-symlink-parent";
+    let store = Store::open_with_store_instance_id(&outside_path, provider).unwrap();
+    store
+        .capture(
+            &capture_decision("Existing outside rationale"),
+            "scope-a",
+            None,
+        )
+        .unwrap();
+    drop(store);
+    std::fs::set_permissions(&outside_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    let observer = Connection::open(&outside_path).unwrap();
+    let before_version: i64 = observer
+        .query_row("PRAGMA data_version", [], |record| record.get(0))
+        .unwrap();
+    let before_bytes = std::fs::read(&outside_path).unwrap();
+    let link = root.join("link");
+    symlink(&outside, &link).unwrap();
+
+    let result = Store::open_with_store_instance_id(&link.join("store.db"), provider);
+    assert!(result.is_err());
+    assert!(inspect_store(&link.join("store.db")).is_err());
+    let after_version: i64 = observer
+        .query_row("PRAGMA data_version", [], |record| record.get(0))
+        .unwrap();
+    assert_eq!(after_version, before_version);
+    assert_eq!(std::fs::read(&outside_path).unwrap(), before_bytes);
+    assert_eq!(
+        std::fs::metadata(&outside_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    let record_count: i64 = observer
+        .query_row("SELECT count(*) FROM decisions", [], |record| record.get(0))
+        .unwrap();
+    assert_eq!(record_count, 1);
+
+    drop(observer);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn real_cli_rejects_existing_store_through_symlinked_parent_without_write() {
+    let root = temp_dir("existing-store-symlink-cli");
+    let outside = root.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let outside_path = outside.join("store.db");
+    let provider = "provider:existing-symlink-cli";
+    let store = Store::open_with_store_instance_id(&outside_path, provider).unwrap();
+    store
+        .capture(
+            &capture_decision("Existing CLI outside rationale"),
+            "scope-a",
+            None,
+        )
+        .unwrap();
+    drop(store);
+    std::fs::set_permissions(&outside_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    let observer = Connection::open(&outside_path).unwrap();
+    let before_version: i64 = observer
+        .query_row("PRAGMA data_version", [], |record| record.get(0))
+        .unwrap();
+    let before_bytes = std::fs::read(&outside_path).unwrap();
+    let link = root.join("link");
+    symlink(&outside, &link).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_why"))
+        .arg("capture")
+        .arg("--id")
+        .arg("blocked-symlink-write")
+        .arg("--title")
+        .arg("Blocked symlink write")
+        .arg("--content")
+        .arg("This content must never reach the outside store.")
+        .arg("--scope")
+        .arg("scope-a")
+        .env("OPEN_WHY_DB", link.join("store.db"))
+        .env("OPEN_WHY_STORE_INSTANCE_ID", provider)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let after_version: i64 = observer
+        .query_row("PRAGMA data_version", [], |record| record.get(0))
+        .unwrap();
+    assert_eq!(after_version, before_version);
+    assert_eq!(std::fs::read(&outside_path).unwrap(), before_bytes);
+    assert_eq!(
+        std::fs::metadata(&outside_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    let blocked_count: i64 = observer
+        .query_row(
+            "SELECT count(*) FROM decisions WHERE id='blocked-symlink-write'",
+            [],
+            |record| record.get(0),
+        )
+        .unwrap();
+    assert_eq!(blocked_count, 0);
+
+    drop(observer);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn feedback_is_atomic_append_only_canonical_and_persistent() {
+    let dir = temp_dir("feedback-durability");
+    let path = dir.join("store.db");
+    let store = Store::open_with_store_instance_id(&path, "provider:feedback-durability").unwrap();
+    let id = store
+        .capture(&capture_decision("Durable feedback"), "repo-a", None)
+        .unwrap();
+
+    let first = store.feedback(&id, true).unwrap().unwrap();
+    let second = store.feedback(&id, true).unwrap().unwrap();
+    assert!((first - 0.55).abs() < 1e-9);
+    assert!((second - 0.6).abs() < 1e-9);
+    let observer = Connection::open(&path).unwrap();
+    let (count, distinct_ids): (i64, i64) = observer
+        .query_row(
+            "SELECT count(*), count(DISTINCT id) FROM feedback_log WHERE memory_id=?1",
+            [&id],
+            |record| Ok((record.get(0)?, record.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((count, distinct_ids), (2, 2));
+    let timestamps = observer
+        .prepare("SELECT created_at FROM feedback_log WHERE memory_id=?1 ORDER BY rowid")
+        .unwrap()
+        .query_map([&id], |record| record.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(timestamps.len(), 2);
+    timestamps
+        .iter()
+        .for_each(|value| assert_canonical_utc(value));
+    let updated_at: String = observer
+        .query_row(
+            "SELECT updated_at FROM decisions WHERE id=?1",
+            [&id],
+            |record| record.get(0),
+        )
+        .unwrap();
+    assert_canonical_utc(&updated_at);
+
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert!((reopened.get_record(&id).unwrap().unwrap().effectiveness - 0.6).abs() < 1e-9);
+
+    observer
+        .execute_batch(
+            "CREATE TRIGGER reject_feedback BEFORE INSERT ON feedback_log
+             BEGIN SELECT RAISE(ABORT, 'sensitive sqlite feedback detail'); END;",
+        )
+        .unwrap();
+    let before: (f64, i64, String, i64) = observer
+        .query_row(
+            "SELECT effectiveness,times_helpful,updated_at,
+                    (SELECT count(*) FROM feedback_log WHERE memory_id=?1)
+             FROM decisions WHERE id=?1",
+            [&id],
+            |record| {
+                Ok((
+                    record.get(0)?,
+                    record.get(1)?,
+                    record.get(2)?,
+                    record.get(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert!(reopened.feedback(&id, true).is_err());
+    let after: (f64, i64, String, i64) = observer
+        .query_row(
+            "SELECT effectiveness,times_helpful,updated_at,
+                    (SELECT count(*) FROM feedback_log WHERE memory_id=?1)
+             FROM decisions WHERE id=?1",
+            [&id],
+            |record| {
+                Ok((
+                    record.get(0)?,
+                    record.get(1)?,
+                    record.get(2)?,
+                    record.get(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after, before);
+
+    drop(reopened);
+    drop(observer);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn concurrent_feedback_writers_append_without_collisions() {
+    const WRITERS: usize = 8;
+    let dir = temp_dir("feedback-concurrency");
+    let path = dir.join("store.db");
+    let store = Store::open_with_store_instance_id(&path, "provider:feedback-concurrency").unwrap();
+    let id = store
+        .capture(&capture_decision("Concurrent feedback"), "repo-a", None)
+        .unwrap();
+    drop(store);
+
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let workers: Vec<_> = (0..WRITERS)
+        .map(|_| {
+            let path = path.clone();
+            let id = id.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let store = Store::open(&path).unwrap();
+                barrier.wait();
+                store.feedback(&id, true).unwrap().unwrap()
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    let observer = Connection::open(&path).unwrap();
+    let (effectiveness, count, distinct_ids): (f64, i64, i64) = observer
+        .query_row(
+            "SELECT effectiveness,
+                    (SELECT count(*) FROM feedback_log WHERE memory_id=?1),
+                    (SELECT count(DISTINCT id) FROM feedback_log WHERE memory_id=?1)
+             FROM decisions WHERE id=?1",
+            [&id],
+            |record| Ok((record.get(0)?, record.get(1)?, record.get(2)?)),
+        )
+        .unwrap();
+    assert!((effectiveness - 0.9).abs() < 1e-9);
+    assert_eq!(count, WRITERS as i64);
+    assert_eq!(distinct_ids, WRITERS as i64);
+
+    drop(observer);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn store_identity_is_stable_distinct_and_preserved_by_copy() {
     let first_dir = temp_dir("stable-store");
@@ -308,11 +661,13 @@ fn store_identity_is_stable_distinct_and_preserved_by_copy() {
 
 #[test]
 fn initial_binding_requires_a_bounded_provider_identity_and_rejects_mismatch() {
-    let root = std::env::temp_dir().join(format!(
-        "open-why-provider-required-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let root = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!(
+            "open-why-provider-required-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     let path = root.join("nested/store.db");
     let error = Store::open(&path).err().unwrap();
     let binding = error.downcast_ref::<StoreIdentityBindingError>().unwrap();
@@ -421,17 +776,56 @@ fn concurrent_first_touch_converges_for_same_identity_and_never_overwrites_a_win
 
 #[test]
 fn inspect_store_is_read_only_for_missing_legacy_and_current_paths() {
-    let missing_root = std::env::temp_dir().join(format!(
-        "open-why-missing-inspect-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let missing_root = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!(
+            "open-why-missing-inspect-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     let missing = missing_root.join("nested/store.db");
     assert!(matches!(
         inspect_store(&missing).unwrap(),
         StoreCompatibility::Missing
     ));
     assert!(!missing_root.exists());
+
+    #[cfg(unix)]
+    {
+        let guarded_root = temp_dir("missing-inspect-parent-validation");
+        let outside = guarded_root.join("outside");
+        let valid_parent = guarded_root.join("valid");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::create_dir(&valid_parent).unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o751)).unwrap();
+        std::fs::set_permissions(&valid_parent, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let link = guarded_root.join("link");
+        symlink(&outside, &link).unwrap();
+
+        assert!(inspect_store(&link.join("missing.db")).is_err());
+        assert!(!outside.join("missing.db").exists());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+
+        assert!(matches!(
+            inspect_store(&valid_parent.join("missing.db")).unwrap(),
+            StoreCompatibility::Missing
+        ));
+        assert!(!valid_parent.join("missing.db").exists());
+        assert_eq!(std::fs::read_dir(&valid_parent).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(&valid_parent)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        std::fs::remove_dir_all(guarded_root).unwrap();
+    }
 
     let legacy_dir = temp_dir("legacy-inspect");
     let legacy_path = legacy_dir.join("legacy.db");
