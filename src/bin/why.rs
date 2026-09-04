@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use open_why::{answer, db, embed, mcp, miner, store, RankExplanation, Record};
+use open_why::{
+    answer, db, embed, mcp, miner, store, CurrentRecordResolution, RankExplanation, Record,
+};
 
 /// Ask why a decision was made — with the evidence.
 #[derive(Parser)]
@@ -211,8 +213,8 @@ fn main() -> Result<()> {
                     )?;
                     print!("{}", answer::render_records(hits));
                 } else {
-                    let hits = store.search(&query, &[scope.as_str()], &types, limit)?;
-                    print!("{}", answer::render(hits));
+                    let hits = store.search_records(&query, &[scope.as_str()], &types, limit)?;
+                    print!("{}", answer::render_records(hits));
                 }
                 Ok(())
             }
@@ -240,20 +242,37 @@ fn main() -> Result<()> {
                         }
                     }
                 } else {
-                    match store.get(&id)? {
-                        Some(d) => {
-                            println!("- {}", d.subject);
-                            println!("  {} · {} · {}", d.date, d.author, d.source);
-                            println!("  {}", d.body);
-                            let commits = store.linked_commits(&id)?;
-                            if !commits.is_empty() {
+                    match store.get_current_evidence(&id)? {
+                        CurrentRecordResolution::Ok {
+                            requested_id,
+                            current_id,
+                            record,
+                            git_refs,
+                            supersession_chain,
+                            as_of,
+                            ..
+                        } => {
+                            println!("- {} [{}]", record.title, current_id);
+                            println!("  requested: {requested_id} · current as of {as_of}");
+                            println!("  {} · {} · {}", record.date, record.author, record.source);
+                            println!("  {}", record.content);
+                            if supersession_chain.len() > 1 {
+                                println!("\n  supersession: {}", supersession_chain.join(" -> "));
+                            }
+                            if !git_refs.is_empty() {
                                 println!("\n  linked commits:");
-                                for (hash, subj) in commits {
-                                    println!("    {} {subj}", &hash[..hash.len().min(8)]);
+                                for git_ref in git_refs {
+                                    println!(
+                                        "    {} {}",
+                                        &git_ref.commit_hash[..git_ref.commit_hash.len().min(8)],
+                                        git_ref.commit_subject
+                                    );
                                 }
                             }
                         }
-                        None => println!("no active decision with id {id}"),
+                        CurrentRecordResolution::Error { code, message, .. } => {
+                            println!("{code:?}: {message}")
+                        }
                     }
                 }
                 Ok(())

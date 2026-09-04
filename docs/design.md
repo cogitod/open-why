@@ -64,9 +64,9 @@ Records carry a kind — `decision`, `fact`, `reference`, `pattern`, `doc`,
 
 **Pre-1.0.** The git-mining path (`why init`, `why capture`, `why search`, `why
 serve`) is fully standalone and works against any git repo today. The `why import`
-path is how this store gets bulk-loaded from an external system (currently:
-cogitod's durable memories) — see [retrieval-parity](retrieval-parity.md) for what
-that does and doesn't require.
+path accepts a portable JSON export from any external system; see
+[retrieval-parity](retrieval-parity.md) for how to validate an imported corpus
+without publishing it.
 
 ## Full CLI surface
 

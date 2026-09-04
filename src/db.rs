@@ -1,5 +1,8 @@
 use crate::embed::Embedder;
-use crate::store::{Decision, EvidenceRecord, ExternalDecision, GitRef, Record};
+use crate::store::{
+    CurrentRecordErrorCode, CurrentRecordResolution, Decision, ExternalDecision, GitRef, Record,
+    CURRENT_RATIONALE_CONTRACT, MAX_SUPERSESSION_CHAIN,
+};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -42,8 +45,8 @@ impl Store {
         Ok(store)
     }
 
-    /// Best-effort embedding of the searchable text. Mirrors cogitod's `embeddingText`:
-    /// `title\ncontent`, then the space-joined tag array when present. Returns the JSON vector
+    /// Best-effort embedding of the searchable text: `title\ncontent`, then the
+    /// space-joined tag array when present. Returns the JSON vector
     /// when an embedder is configured and succeeds; `None` keeps the row lexical.
     fn embed_text(&self, title: &str, content: &str, tags: Option<&str>) -> Option<String> {
         let embedder = self.embedder.as_ref()?;
@@ -126,8 +129,8 @@ impl Store {
         Ok(())
     }
 
-    /// Native FTS5 lexical index, mirroring cogitod's `memories_fts` external-content table
-    /// (migrations 001/044/049): columns `scope, title, content, tags`, synced by triggers,
+    /// Native FTS5 external-content lexical index with `scope`, `title`, `content`, and
+    /// `tags` columns, synchronized by triggers,
     /// ranked by `bm25(decisions_fts, 0, 10, 5, 1)` — scope weight 0, title 10, content 5,
     /// tags 1. This makes the lexical arm byte-for-byte the same engine the TS side calls.
     fn ensure_fts(&self) -> Result<()> {
@@ -251,11 +254,11 @@ impl Store {
         Ok(existing)
     }
 
-    /// Capture a decision with an externally-minted id (a cogitod memory UUID) and an
+    /// Capture a decision with an externally minted stable ID and an
     /// explicit validity start. Idempotent by the external id: re-capturing the same id
     /// returns it without a duplicate. `supersedes` retires an older decision.
     /// `fact_key` and title matches retire the current same-key / same-title record
-    /// (point-in-time supersession, mirroring cogitod's keyed + title predecessor rule).
+    /// using the same point-in-time supersession rule as ordinary capture.
     pub fn capture_external(
         &self,
         d: &Decision,
@@ -291,7 +294,7 @@ impl Store {
             ],
         )?;
         // Retire predecessors: the explicit supersedes id, then any current record that
-        // shares the fact_key or the (kind, title) — the same rule cogitod applies.
+        // shares the fact_key or the (kind, title).
         let mut predecessors: Vec<String> = supersedes
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
@@ -441,7 +444,9 @@ impl Store {
         let validity = if include_superseded {
             ""
         } else {
-            " AND superseded_by IS NULL AND valid_until IS NULL"
+            " AND superseded_by IS NULL
+              AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+              AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))"
         };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
@@ -492,7 +497,7 @@ impl Store {
     }
 
     /// Lexical arm ordering: the rowids of the FTS5 `bm25()` best-first match, narrow-then-broad,
-    /// mapped to indices into `rowids`. Mirrors cogitod's `lexicalSearchIds` + RRF position.
+    /// mapped to indices into `rowids` for reciprocal-rank fusion.
     fn lexical_indices(
         &self,
         query: &str,
@@ -511,8 +516,7 @@ impl Store {
     }
 
     /// Run the FTS5 lexical query (narrow-then-broad over quoted terms) and return the matched
-    /// rowids ordered by `bm25(decisions_fts, 0, 10, 5, 1)`. This is the exact engine cogitod's
-    /// `MemoryRepository.lexicalSearchIds` runs, so parity is a query shape, not a re-derivation.
+    /// rowids ordered by `bm25(decisions_fts, 0, 10, 5, 1)`.
     fn lexical_rowids(
         &self,
         query: &str,
@@ -535,7 +539,9 @@ impl Store {
         let validity = if include_superseded {
             ""
         } else {
-            " AND d.superseded_by IS NULL AND d.valid_until IS NULL"
+            " AND d.superseded_by IS NULL
+              AND (d.valid_from IS NULL OR unixepoch(d.valid_from) <= unixepoch('now'))
+              AND (d.valid_until IS NULL OR unixepoch(d.valid_until) > unixepoch('now'))"
         };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
@@ -587,7 +593,9 @@ impl Store {
             .conn
             .query_row(
                 "SELECT kind,title,content,importance,source,author,commit_sha,date
-                 FROM decisions WHERE id=?1 AND superseded_by IS NULL",
+                 FROM decisions WHERE id=?1 AND superseded_by IS NULL
+                   AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+                   AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))",
                 params![id],
                 |r| {
                     Ok(Decision {
@@ -609,7 +617,7 @@ impl Store {
     pub fn linked_commits(&self, decision_id: &str) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT commit_hash, commit_subject FROM decision_git_refs
-             WHERE decision_id=?1 ORDER BY created_at DESC",
+             WHERE decision_id=?1 ORDER BY created_at DESC, commit_hash ASC",
         )?;
         let rows = stmt.query_map(params![decision_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let mut out = Vec::new();
@@ -622,20 +630,133 @@ impl Store {
     /// Resolve a stable record ID to the current, evidence-bearing end of its
     /// supersession chain.
     ///
-    /// Unknown IDs, broken chains, retired records without a successor, cycles, and
-    /// chains longer than the bounded traversal return `None`. This fail-closed read
-    /// is intended for continuation and other prompt-facing consumers: a superseded
-    /// record must never masquerade as the current rationale.
-    pub fn get_current_evidence(&self, id: &str) -> Result<Option<EvidenceRecord>> {
-        const MAX_SUPERSESSION_CHAIN: usize = 64;
+    /// Resolve an exact stable ID at the production clock instant. Failures are
+    /// typed so absence cannot be confused with damaged supersession history.
+    pub fn get_current_evidence(&self, id: &str) -> Result<CurrentRecordResolution> {
+        self.get_current_evidence_at(id, now_epoch(), MAX_SUPERSESSION_CHAIN)
+    }
 
-        let chain = self.supersession_chain(id, MAX_SUPERSESSION_CHAIN)?;
-        let Some(current) = chain.last().cloned() else {
-            return Ok(None);
+    /// Clock-injected implementation used by the MCP server and deterministic tests.
+    /// MCP callers never supply `as_of`; the server owns that clock authority.
+    pub(crate) fn get_current_evidence_at(
+        &self,
+        id: &str,
+        as_of: i64,
+        chain_cap: usize,
+    ) -> Result<CurrentRecordResolution> {
+        let as_of_iso = epoch_to_iso(as_of);
+        let fail = |code, message: String| CurrentRecordResolution::Error {
+            contract: CURRENT_RATIONALE_CONTRACT,
+            as_of: as_of_iso.clone(),
+            requested_id: id.to_string(),
+            code,
+            message,
+            retryable: false,
         };
-        if current.superseded_by.is_some() || current.valid_until.is_some() {
-            return Ok(None);
+
+        let mut chain = Vec::new();
+        let mut cursor = id.to_string();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(cursor.clone()) {
+                return Ok(fail(
+                    CurrentRecordErrorCode::Cycle,
+                    format!("supersession cycle reaches `{cursor}`"),
+                ));
+            }
+            let Some(record) = self.get_record_any(&cursor, true)? else {
+                let (code, message) = if chain.is_empty() {
+                    (
+                        CurrentRecordErrorCode::NotFound,
+                        format!("record `{id}` was not found"),
+                    )
+                } else {
+                    (
+                        CurrentRecordErrorCode::BrokenChain,
+                        format!("supersession successor `{cursor}` was not found"),
+                    )
+                };
+                return Ok(fail(code, message));
+            };
+
+            for (field, raw) in [
+                ("valid_from", record.valid_from.as_deref()),
+                ("valid_until", record.valid_until.as_deref()),
+            ] {
+                if let Some(raw) = raw.filter(|value| !value.is_empty()) {
+                    if self.temporal_epoch(raw)?.is_none() {
+                        return Ok(fail(
+                            CurrentRecordErrorCode::InvalidTemporalData,
+                            format!("record `{}` has invalid {field} `{raw}`", record.id),
+                        ));
+                    }
+                }
+            }
+            if let (Some(valid_from), Some(valid_until)) = (
+                record
+                    .valid_from
+                    .as_deref()
+                    .filter(|value| !value.is_empty()),
+                record
+                    .valid_until
+                    .as_deref()
+                    .filter(|value| !value.is_empty()),
+            ) {
+                let from = self.temporal_epoch(valid_from)?.expect("validated above");
+                let until = self.temporal_epoch(valid_until)?.expect("validated above");
+                if from >= until {
+                    return Ok(fail(
+                        CurrentRecordErrorCode::InvalidTemporalData,
+                        format!(
+                            "record `{}` has a non-positive validity interval",
+                            record.id
+                        ),
+                    ));
+                }
+            }
+
+            let next = record
+                .superseded_by
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            chain.push(record);
+            if let Some(next) = next {
+                if chain.len() >= chain_cap {
+                    return Ok(fail(
+                        CurrentRecordErrorCode::TraversalLimit,
+                        format!("supersession chain exceeds {chain_cap} records"),
+                    ));
+                }
+                cursor = next;
+                continue;
+            }
+            break;
         }
+
+        let current = chain.last().expect("a fetched chain is non-empty").clone();
+        if let Some(valid_from) = current.valid_from.as_deref().filter(|v| !v.is_empty()) {
+            let epoch = self.temporal_epoch(valid_from)?.expect("validated above");
+            if as_of < epoch {
+                return Ok(fail(
+                    CurrentRecordErrorCode::NotYetValid,
+                    format!("record `{}` is not current at {as_of_iso}", current.id),
+                ));
+            }
+        }
+        if let Some(valid_until) = current.valid_until.as_deref().filter(|v| !v.is_empty()) {
+            let epoch = self.temporal_epoch(valid_until)?.expect("validated above");
+            if as_of >= epoch {
+                return Ok(fail(
+                    CurrentRecordErrorCode::ExpiredWithoutSuccessor,
+                    format!(
+                        "record `{}` expired without a successor at `{valid_until}`",
+                        current.id
+                    ),
+                ));
+            }
+        }
+
         let git_refs = self
             .linked_commits(&current.id)?
             .into_iter()
@@ -644,12 +765,34 @@ impl Store {
                 commit_subject,
             })
             .collect();
-        Ok(Some(EvidenceRecord {
+        Ok(CurrentRecordResolution::Ok {
+            contract: CURRENT_RATIONALE_CONTRACT,
+            as_of: as_of_iso,
             requested_id: id.to_string(),
-            record: current,
+            current_id: current.id.clone(),
+            record: Box::new(current),
             git_refs,
             supersession_chain: chain.into_iter().map(|record| record.id).collect(),
-        }))
+        })
+    }
+
+    pub(crate) fn temporal_epoch(&self, value: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT unixepoch(?1)", params![value], |row| row.get(0))?)
+    }
+
+    pub fn temporal_value_is_valid(&self, value: &str) -> Result<bool> {
+        Ok(self.temporal_epoch(value)?.is_some())
+    }
+
+    pub fn record_belongs_to_scope(&self, id: &str, scope: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM decisions WHERE id=?1 AND scope=?2",
+            params![id, scope],
+            |row| row.get(0),
+        )?;
+        Ok(count == 1)
     }
 
     /// Search active decisions across scopes and return full records (id + temporal
@@ -761,7 +904,9 @@ impl Store {
         let validity = if include_superseded {
             ""
         } else {
-            " AND superseded_by IS NULL AND valid_until IS NULL"
+            " AND superseded_by IS NULL
+              AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+              AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))"
         };
         let placeholders = vec!["?"; scopes.len()].join(",");
         let kind_clause = if kinds.is_empty() {
@@ -827,7 +972,9 @@ impl Store {
         let validity = if include_superseded {
             ""
         } else {
-            " AND superseded_by IS NULL"
+            " AND superseded_by IS NULL
+              AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+              AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))"
         };
         let sql = format!(
             "SELECT id,kind,title,content,importance,source,author,commit_sha,date,scope,
@@ -949,7 +1096,9 @@ impl Store {
 
     pub fn count_for_scope(&self, scope: &str) -> Result<usize> {
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM decisions WHERE scope=?1 AND superseded_by IS NULL",
+            "SELECT COUNT(*) FROM decisions WHERE scope=?1 AND superseded_by IS NULL
+               AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+               AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))",
             params![scope],
             |r| r.get(0),
         )?;
@@ -958,8 +1107,8 @@ impl Store {
 
     /// Record explicit retrieval feedback on a decision — the closing half of the usage→quality
     /// loop. A helpful verdict raises the record's effectiveness and a not-helpful verdict lowers
-    /// it, mirroring cogitod's `context_retrieval_feedback` `FEEDBACK_SET_SQL`: the delta lands on
-    /// the effective value (ungraded prior 0.5), clamped to `[0.01, 1.0]`, and `updated_at` is
+    /// it. The delta lands on the effective value (ungraded prior 0.5), clamped to
+    /// `[0.01, 1.0]`, and `updated_at` is
     /// bumped so the verdict also moves recency. Returns the new effectiveness, or `None` when the
     /// id is unknown or superseded.
     pub fn feedback(&self, id: &str, helpful: bool) -> Result<Option<f64>> {
@@ -969,7 +1118,9 @@ impl Store {
                times_helpful = COALESCE(times_helpful, 0) + ?1,
                effectiveness = MIN(1.0, MAX(0.01, effectiveness + ?2)),
                updated_at = datetime('now')
-             WHERE id = ?3 AND superseded_by IS NULL",
+             WHERE id = ?3 AND superseded_by IS NULL
+               AND (valid_from IS NULL OR unixepoch(valid_from) <= unixepoch('now'))
+               AND (valid_until IS NULL OR unixepoch(valid_until) > unixepoch('now'))",
             params![if helpful { 1 } else { 0 }, delta, id],
         )?;
         if updated == 0 {
@@ -989,20 +1140,20 @@ impl Store {
     }
 }
 
-/// RRF fusion constant (Cormack et al. 2009), matching cogitod's `RRF_K`.
+/// RRF fusion constant (Cormack et al. 2009).
 const RRF_K: f64 = 60.0;
-/// BM25 leads the inline fusion in cogitod (arXiv 2605.15184, Table 1).
+/// BM25 leads the inline fusion (arXiv 2605.15184, Table 1).
 const BM25_WEIGHT: f64 = 1.5;
-/// Hybrid rerank weights (sim / importance / effectiveness), matching cogitod.
+/// Calibrated hybrid rerank weights (similarity / importance / effectiveness).
 const RERANK_W_SIM: f64 = 0.65;
 const RERANK_W_IMPORTANCE: f64 = 0.25;
 const RERANK_W_EFFECTIVENESS: f64 = 0.10;
-/// Floor under recency decay, matching cogitod's `RECENCY_DECAY_FLOOR`: an old-but-best match
+/// Floor under recency decay: an old-but-best match
 /// must stay reachable rather than being buried to zero by age alone.
 const RECENCY_DECAY_FLOOR: f64 = 0.3;
 const RECENCY_HALF_LIFE_DAYS: f64 = 7.0;
 const RECENCY_HALF_LIFE_DECISION_DAYS: f64 = 2.0;
-/// Query-conditional recency weighting (mem0's temporal-reasoning idea), matching cogitod.
+/// Query-conditional recency weighting.
 const RECENCY_BOOST: f64 = 2.5;
 const RECENCY_SUPPRESS: f64 = 0.3;
 
@@ -1085,7 +1236,7 @@ pub struct RankExplanation {
 /// and `--explain-drops` paths.
 pub type Explained = Vec<(Record, RankExplanation)>;
 
-/// Hybrid rerank matching cogitod's `searchMemoriesHybrid`: reciprocal-rank fusion of a
+/// Hybrid rerank using reciprocal-rank fusion of a
 /// semantic arm (sorted by hybrid score) and a lexical arm (the FTS5 `bm25()` order supplied by
 /// the caller, already narrow-then-broad), then slice. Recency enters through the semantic arm's
 /// hybrid score — floored, so age cannot bury a best match — never as a multiplicative gate on
@@ -1199,7 +1350,7 @@ fn rank_by<T>(
 
     let n = capsules.len();
 
-    // Semantic arm mirrors cogitod's ANN KNN: keep only the nearest-by-cosine rows (the semantic
+    // Semantic arm: keep only the nearest-by-cosine rows (the semantic
     // neighbourhood), then order THAT set by hybrid score. Ordering the whole corpus by hybrid
     // score would let recency/importance crowd out semantically-far rows before fusion.
     let semantic_order: Vec<usize> = if has_query_emb {
@@ -1265,7 +1416,7 @@ fn rank_by<T>(
         .collect();
     order.sort_unstable();
     order.dedup();
-    // Post-fusion relevance gate (mirrors cogitod's `MemoryRelevanceGate`): drop candidates
+    // Post-fusion relevance gate: drop candidates
     // that cleared BM25/RRF fusion but are not actually relevant to the query, before the
     // final score sort — so a filtered-out noise row can't block a genuine match from the
     // top-N slice. Must run on the full fused set, not just the eventual top `limit`.
@@ -1341,7 +1492,7 @@ fn iso_to_epoch(s: &str) -> Option<i64> {
     Some(days * 86_400 + h * 3600 + mi * 60 + se)
 }
 
-fn epoch_to_iso(secs: i64) -> String {
+pub(crate) fn epoch_to_iso(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
@@ -1664,12 +1815,28 @@ mod tests {
             .link_git("bbb", "new-commit", "Move to Postgres")
             .unwrap();
 
-        let evidence = store.get_current_evidence("aaa").unwrap().unwrap();
-        assert_eq!(evidence.requested_id, "aaa");
-        assert_eq!(evidence.record.id, "bbb");
-        assert_eq!(evidence.supersession_chain, ["aaa", "bbb"]);
-        assert_eq!(evidence.git_refs.len(), 1);
-        assert_eq!(evidence.git_refs[0].commit_hash, "new-commit");
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+        let evidence = store.get_current_evidence_at("aaa", as_of, 64).unwrap();
+        let CurrentRecordResolution::Ok {
+            requested_id,
+            current_id,
+            record,
+            supersession_chain,
+            git_refs,
+            as_of: effective_as_of,
+            ..
+        } = evidence
+        else {
+            panic!("expected successful current resolution");
+        };
+        assert_eq!(requested_id, "aaa");
+        assert_eq!(current_id, "bbb");
+        assert_eq!(record.id, "bbb");
+        assert_eq!(record.content, "postgres now");
+        assert_eq!(supersession_chain, ["aaa", "bbb"]);
+        assert_eq!(git_refs.len(), 1);
+        assert_eq!(git_refs[0].commit_hash, "new-commit");
+        assert_eq!(effective_as_of, "2026-03-01T00:00:00Z");
     }
 
     #[test]
@@ -1693,8 +1860,193 @@ mod tests {
             )
             .unwrap();
 
-        assert!(store.get_current_evidence("retired-id").unwrap().is_none());
-        assert!(store.get_current_evidence("missing").unwrap().is_none());
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+        assert!(matches!(
+            store
+                .get_current_evidence_at("retired-id", as_of, 64)
+                .unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::ExpiredWithoutSuccessor,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.get_current_evidence_at("missing", as_of, 64).unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn current_evidence_distinguishes_broken_cycle_and_traversal_limit() {
+        let store = temp_store();
+        let row = |id: &str, successor: Option<&str>| ExternalDecision {
+            id: id.to_owned(),
+            kind: "decision".to_owned(),
+            title: format!("record {id}"),
+            content: format!("complete body for {id}"),
+            importance: 0.5,
+            source: "synthetic".to_owned(),
+            author: "tester".to_owned(),
+            date: "2026-01-01".to_owned(),
+            updated_at: None,
+            accessed_count: None,
+            times_injected: None,
+            effectiveness: None,
+            tags: None,
+            scope: "scope-a".to_owned(),
+            valid_from: Some("2026-01-01T00:00:00Z".to_owned()),
+            valid_until: successor.map(|_| "2026-02-01T00:00:00Z".to_owned()),
+            superseded_by: successor.map(str::to_owned),
+            fact_key: None,
+            git_refs: Vec::new(),
+        };
+        store
+            .import_external(&[row("broken", Some("missing"))])
+            .unwrap();
+        store
+            .import_external(&[
+                row("cycle-a", Some("cycle-b")),
+                row("cycle-b", Some("cycle-a")),
+            ])
+            .unwrap();
+        store
+            .import_external(&[row("long-a", Some("long-b")), row("long-b", None)])
+            .unwrap();
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+
+        assert!(matches!(
+            store.get_current_evidence_at("broken", as_of, 64).unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::BrokenChain,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.get_current_evidence_at("cycle-a", as_of, 64).unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::Cycle,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.get_current_evidence_at("long-a", as_of, 1).unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::TraversalLimit,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn current_evidence_obeys_validity_instants_and_rejects_bad_stored_time() {
+        let store = temp_store();
+        let insert = |id: &str, from: &str, until: Option<&str>| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO decisions
+                     (id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                      valid_from,valid_until,content_digest,source_identity,created_epoch)
+                     VALUES (?1,'decision',?1,'full body',0.5,'synthetic','tester','',
+                             '2026-01-01','scope-a',?2,?3,?1,?1,0)",
+                    params![id, from, until],
+                )
+                .unwrap();
+        };
+        insert("future", "2026-04-01T00:00:00Z", None);
+        insert(
+            "bounded",
+            "2026-01-01T00:00:00Z",
+            Some("2026-04-01T00:00:00Z"),
+        );
+        insert("invalid", "not-a-time", None);
+        insert(
+            "inverted",
+            "2026-05-01T00:00:00Z",
+            Some("2026-04-01T00:00:00Z"),
+        );
+        let before = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+        let boundary = iso_to_epoch("2026-04-01T00:00:00Z").unwrap();
+
+        assert!(matches!(
+            store.get_current_evidence_at("future", before, 64).unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::NotYetValid,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store
+                .get_current_evidence_at("bounded", before, 64)
+                .unwrap(),
+            CurrentRecordResolution::Ok { .. }
+        ));
+        assert!(matches!(
+            store
+                .get_current_evidence_at("bounded", boundary, 64)
+                .unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::ExpiredWithoutSuccessor,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store
+                .get_current_evidence_at("invalid", before, 64)
+                .unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::InvalidTemporalData,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store
+                .get_current_evidence_at("inverted", before, 64)
+                .unwrap(),
+            CurrentRecordResolution::Error {
+                code: CurrentRecordErrorCode::InvalidTemporalData,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn active_search_excludes_future_and_expired_temporal_records() {
+        let store = temp_store();
+        let insert = |id: &str, from: &str, until: Option<&str>| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO decisions
+                     (id,kind,title,content,importance,source,author,commit_sha,date,scope,
+                      valid_from,valid_until,content_digest,source_identity,created_epoch)
+                     VALUES (?1,'decision','temporal sentinel','temporal sentinel',0.5,
+                             'synthetic','tester','','2026-01-01','scope-a',?2,?3,?1,?1,0)",
+                    params![id, from, until],
+                )
+                .unwrap();
+        };
+        insert("current", "2000-01-01T00:00:00Z", None);
+        insert("future", "2999-01-01T00:00:00Z", None);
+        insert(
+            "expired",
+            "2000-01-01T00:00:00Z",
+            Some("2001-01-01T00:00:00Z"),
+        );
+
+        let active = store
+            .search_records("temporal sentinel", &["scope-a"], &[], 10)
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "current");
+
+        let historical = store
+            .search_records_with("temporal sentinel", &["scope-a"], &[], 10, true)
+            .unwrap();
+        assert_eq!(historical.len(), 3);
     }
 
     #[test]

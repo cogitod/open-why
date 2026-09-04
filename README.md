@@ -45,7 +45,7 @@ every answer is evidence-bound:
 
 ```
 - Use SQLite for the local-first record
-  2025-03-11 · adrian · commit 8f2c41a
+  2025-03-11 · developer · commit 8f2c41a
   zero-config, single file, survives a laptop
 ```
 

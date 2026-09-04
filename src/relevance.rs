@@ -1,19 +1,18 @@
-//! Post-fusion relevance gate, ported from cogitod's `MemoryRelevanceGate` /
-//! `MemorySearchUtils` (TypeScript). Constants and word lists are copied verbatim from the
-//! calibrated source — see `RAG_UTILITY_THRESHOLD` etc. below for the exact citation. Do not
-//! retune these here; if they need to move, move them in cogitod first and re-port.
+//! Post-fusion relevance gate. Constants and word lists are calibrated against retrieval
+//! fixtures and live as named values rather than magic numbers. Do not retune them without
+//! representative regression evidence.
 
 /// Calibrated 2026-08-12 against `retrieval-threshold-calibration.v2.json` and two further
-/// fixtures. `MemorySearchUtils.ts:178`.
+/// fixtures.
 pub const RAG_UTILITY_THRESHOLD: f64 = 0.3825;
-/// `MemorySearchUtils.ts:186`. Similarity at or above this bypasses the lexical check entirely.
+/// Similarity at or above this bypasses the lexical check entirely.
 pub const RAG_SEMANTIC_BYPASS: f64 = 0.35;
-/// `MemorySearchUtils.ts:192`. A nonzero similarity below this is refused outright.
+/// A nonzero similarity below this is refused outright.
 pub const SIMILARITY_FLOOR: f64 = 0.34;
 
 const LEXICAL_COMMON_WEIGHT: f64 = 0.20;
 
-/// Query words that carry no topic; dropped from the query side only. `MemorySearchUtils.ts:226`.
+/// Query words that carry no topic; dropped from the query side only.
 const LEXICAL_STOPWORDS: &[&str] = &[
     "the", "and", "for", "are", "was", "were", "been", "being", "have", "has", "had", "does",
     "did", "doing", "you", "your", "our", "its", "their", "this", "that", "these", "those", "what",
@@ -25,7 +24,7 @@ const LEXICAL_STOPWORDS: &[&str] = &[
 ];
 
 /// Everyday-world vocabulary, weighted down as admission evidence — a technical term is
-/// evidence in this corpus, an everyday-world noun almost never is. `MemorySearchUtils.ts:267`.
+/// evidence in a technical corpus, an everyday-world noun almost never is.
 const LEXICAL_COMMON_TERMS: &[&str] = &[
     "water",
     "air",
@@ -120,7 +119,7 @@ const LEXICAL_COMMON_TERMS: &[&str] = &[
 ];
 
 /// Split on Unicode letter/digit runs, not whitespace, so punctuation never glues to a token.
-/// Mirrors `[\p{L}\p{N}]+` in `MemorySearchUtils.ts:207`; tokens of length <= 2 are dropped.
+/// Extract Unicode alphanumeric runs; tokens of length two or less are dropped.
 fn lexical_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -142,7 +141,7 @@ fn lexical_tokens(text: &str) -> Vec<String> {
 }
 
 /// How much of the query's evidence does this passage actually contain? Weighted term
-/// coverage, not occurrence count. `MemorySearchUtils.ts:320` (`ragCompositeScore`).
+/// coverage, not occurrence count.
 pub fn rag_composite_score(query: &str, content: &str) -> f64 {
     let query_all = lexical_tokens(query);
     let meaningful: Vec<&str> = query_all

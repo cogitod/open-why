@@ -6,14 +6,13 @@ use std::path::PathBuf;
 
 /// Run the golden retrieval parity set against open-why.
 ///
-/// The fixture (`tests/fixtures/golden-queries.json`) records, for each query, the top-1
-/// memory cogitod's production `mem_search` returned against the live durable corpus. This
-/// binary checks open-why's top-1 matches by id (the memory UUID is preserved verbatim
-/// through the mirror), and reports the full top-3 for eyeballing near-misses.
+/// The fixture records, for each query, the top result from a trusted reference run. This
+/// binary checks open-why's top result by stable ID and reports the full top three for
+/// inspecting near-misses.
 ///
-/// Preconditions: the open-why store holds a current mirror of cogitod's durable memories
-/// (see cogitod `scripts/migrate-durable-to-open-why.ts`), and an embedder is configured
-/// (`OPEN_WHY_EMBED_MODEL_PATH` or `why fetch-model`) so the semantic arm is active.
+/// Preconditions: the open-why store holds the corpus used by the reference run, and an
+/// equivalent embedder is configured (`OPEN_WHY_EMBED_MODEL_PATH` or `why fetch-model`) when
+/// the semantic arm is part of the reference.
 #[derive(Parser)]
 #[command(
     name = "why-golden",

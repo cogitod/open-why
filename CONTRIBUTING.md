@@ -26,9 +26,10 @@ Enable the pre-commit leak-check hook once per clone:
 git config core.hooksPath hooks
 ```
 
-It scans staged files for secrets (keys, tokens) and for unreviewed exports of real
-internal records — see `hooks/check-leaks.sh`. Reviewed, intentional exceptions are
-listed in `hooks/leak-allowlist.txt`.
+It scans staged files for secrets, unreviewed exports of real records, private
+filesystem paths, and references to downstream/private implementations. See
+`hooks/check-leaks.sh`. Reviewed synthetic UUID fixtures may be listed in
+`hooks/leak-allowlist.txt`; secrets and provenance leaks may not be allowlisted.
 
 ## Before opening a PR
 
@@ -53,8 +54,8 @@ cargo build --release --bin why-golden && ./target/release/why-golden --fixture 
 
 - Link an issue if one exists.
 - Describe what changed and why — the "why" matters more here than most projects.
-- Note any behavior change, even a small one (this project ports calibrated
-  constants from another system; don't retune ranking numbers without saying so).
+- Note any behavior change, even a small one. Do not retune ranking constants
+  without representative regression evidence.
 - `main` requires the CI checks (`leak-check`, `build-and-test`) to pass before merge.
 
 ## Reporting a security issue
