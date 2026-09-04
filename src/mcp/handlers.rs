@@ -12,10 +12,11 @@ use crate::store::{
     self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
     CurrentRecordResolution, EvidenceIdentityResolution, ExternalDecision,
     RationaleHistoryErrorCode, RationaleHistoryResolution, Record, RecordIdentityConflict,
-    ScopedCommitLinkErrorCode, ScopedCommitLinkResolution, COMMIT_LINKS_CONTRACT,
-    MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINK_HASH_BYTES, MAX_COMMIT_LINK_SUBJECT_BYTES,
-    MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES,
-    RATIONALE_HISTORY_CONTRACT, RATIONALE_IMPORT_CONTRACT,
+    ScopedCommitLinkErrorCode, ScopedCommitLinkResolution, SupersessionConflict, SupersessionCycle,
+    SupersessionTargetNotFound, COMMIT_LINKS_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS,
+    MAX_COMMIT_LINK_HASH_BYTES, MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_RECORDS,
+    MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES, RATIONALE_HISTORY_CONTRACT,
+    RATIONALE_IMPORT_CONTRACT,
 };
 use crate::{db, miner};
 use serde_json::{json, Value};
@@ -159,6 +160,23 @@ fn capture_tool(store: &db::Store, args: &Value) -> ToolResult {
             ToolError::new(
                 "invalid_arguments",
                 "supersession predecessor has invalid temporal data",
+            )
+        } else if error.downcast_ref::<SupersessionCycle>().is_some() {
+            ToolError::new(
+                "supersession_cycle",
+                "requested supersession relation would create a cycle",
+            )
+        } else if error.downcast_ref::<SupersessionConflict>().is_some() {
+            ToolError::new(
+                "supersession_conflict",
+                "supersession predecessor already names a different successor",
+            )
+        } else if error.downcast_ref::<SupersessionTargetNotFound>().is_some() {
+            ToolError::new("not_found", "supersession predecessor was not found")
+        } else if error.downcast_ref::<RecordIdentityConflict>().is_some() {
+            ToolError::new(
+                "identity_conflict",
+                "immutable record evidence does not match its sealed digest",
             )
         } else {
             ToolError::internal(error)

@@ -106,6 +106,33 @@ fn temporal_schema_and_runtime_share_the_canonical_byte_limit() {
 }
 
 #[test]
+fn capture_reports_typed_supersession_and_identity_errors_instead_of_internal() {
+    let store = temp_store();
+    let capture = |id: &str, content: &str, supersedes: Option<&str>| {
+        let mut arguments = json!({
+            "id":id,
+            "title":format!("title {id}"),
+            "content":content,
+            "scope":"scope-a"
+        });
+        if let Some(supersedes) = supersedes {
+            arguments["supersedes"] = json!(supersedes);
+        }
+        dispatch_tool(&store, "open-why_capture", &arguments, 0)
+    };
+
+    capture("loop-a", "a", None).unwrap();
+    capture("loop-b", "b", Some("loop-a")).unwrap();
+    let cycle = capture("loop-a", "a", Some("loop-b")).unwrap_err();
+    assert_eq!(cycle.payload["code"], "supersession_cycle");
+    assert_ne!(cycle.payload["code"], "internal");
+
+    let identity_conflict = capture("loop-a", "a but different", None).unwrap_err();
+    assert_eq!(identity_conflict.payload["code"], "identity_conflict");
+    assert_ne!(identity_conflict.payload["code"], "internal");
+}
+
+#[test]
 fn malformed_json_and_invalid_arguments_are_protocol_or_tool_errors() {
     let store = temp_store();
     let input = b"{bad json}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"open-why_get\",\"arguments\":{}}}\n";
