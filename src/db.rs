@@ -33,6 +33,13 @@ struct HistoryNode {
     valid_until: Option<String>,
 }
 
+struct CurrentNode {
+    id: String,
+    superseded_by: Option<String>,
+    valid_from: Option<String>,
+    valid_until: Option<String>,
+}
+
 struct HistoryPageRequest<'a> {
     id: &'a str,
     scope: &'a str,
@@ -824,6 +831,31 @@ impl Store {
         as_of: i64,
         chain_cap: usize,
     ) -> Result<CurrentRecordResolution> {
+        self.get_current_evidence_at_with_scope_and_hook(id, None, as_of, chain_cap, || Ok(()))
+    }
+
+    /// Resolve an exact record for an untrusted scoped caller without revealing
+    /// whether an unavailable chain node exists in another scope.
+    pub(crate) fn get_current_evidence_in_scope_at(
+        &self,
+        id: &str,
+        scope: &str,
+        as_of: i64,
+        chain_cap: usize,
+    ) -> Result<CurrentRecordResolution> {
+        self.get_current_evidence_at_with_scope_and_hook(id, Some(scope), as_of, chain_cap, || {
+            Ok(())
+        })
+    }
+
+    fn get_current_evidence_at_with_scope_and_hook(
+        &self,
+        id: &str,
+        scope: Option<&str>,
+        as_of: i64,
+        chain_cap: usize,
+        after_root_lookup: impl FnOnce() -> Result<()>,
+    ) -> Result<CurrentRecordResolution> {
         let as_of_iso = epoch_to_iso(as_of);
         let fail = |code, message: String| CurrentRecordResolution::Error {
             contract: CURRENT_RATIONALE_CONTRACT,
@@ -834,9 +866,14 @@ impl Store {
             retryable: false,
         };
 
+        // One read transaction owns root authorization, every successor hop,
+        // temporal validation, current-record hydration, and Git evidence. In
+        // WAL mode concurrent commits become visible only to the next call.
+        let transaction = self.conn.unchecked_transaction()?;
         let mut chain = Vec::new();
         let mut cursor = id.to_string();
         let mut seen = std::collections::HashSet::new();
+        let mut after_root_lookup = Some(after_root_lookup);
         loop {
             if !seen.insert(cursor.clone()) {
                 return Ok(fail(
@@ -844,63 +881,72 @@ impl Store {
                     format!("supersession cycle reaches `{cursor}`"),
                 ));
             }
-            let Some(record) = self.get_record_any(&cursor, true)? else {
+            let Some(node) = Self::current_node_on(&transaction, &cursor, scope)? else {
                 let (code, message) = if chain.is_empty() {
                     (
                         CurrentRecordErrorCode::NotFound,
-                        format!("record `{id}` was not found"),
+                        match scope {
+                            Some(scope) => {
+                                format!("record `{id}` was not found in scope `{scope}`")
+                            }
+                            None => format!("record `{id}` was not found"),
+                        },
                     )
                 } else {
                     (
                         CurrentRecordErrorCode::BrokenChain,
-                        format!("supersession successor `{cursor}` was not found"),
+                        match scope {
+                            Some(_) => "supersession chain is unavailable in the requested scope"
+                                .to_owned(),
+                            None => format!("supersession successor `{cursor}` was not found"),
+                        },
                     )
                 };
                 return Ok(fail(code, message));
             };
+            if chain.is_empty() {
+                after_root_lookup
+                    .take()
+                    .expect("root lookup hook runs once")()?;
+            }
 
             for (field, raw) in [
-                ("valid_from", record.valid_from.as_deref()),
-                ("valid_until", record.valid_until.as_deref()),
+                ("valid_from", node.valid_from.as_deref()),
+                ("valid_until", node.valid_until.as_deref()),
             ] {
                 if let Some(raw) = raw.filter(|value| !value.is_empty()) {
-                    if self.temporal_epoch(raw)?.is_none() {
+                    if Self::temporal_epoch_on(&transaction, raw)?.is_none() {
                         return Ok(fail(
                             CurrentRecordErrorCode::InvalidTemporalData,
-                            format!("record `{}` has invalid {field} `{raw}`", record.id),
+                            format!("record `{}` has invalid {field} `{raw}`", node.id),
                         ));
                     }
                 }
             }
             if let (Some(valid_from), Some(valid_until)) = (
-                record
-                    .valid_from
-                    .as_deref()
-                    .filter(|value| !value.is_empty()),
-                record
-                    .valid_until
+                node.valid_from.as_deref().filter(|value| !value.is_empty()),
+                node.valid_until
                     .as_deref()
                     .filter(|value| !value.is_empty()),
             ) {
-                let from = self.temporal_epoch(valid_from)?.expect("validated above");
-                let until = self.temporal_epoch(valid_until)?.expect("validated above");
+                let from =
+                    Self::temporal_epoch_on(&transaction, valid_from)?.expect("validated above");
+                let until =
+                    Self::temporal_epoch_on(&transaction, valid_until)?.expect("validated above");
                 if from >= until {
                     return Ok(fail(
                         CurrentRecordErrorCode::InvalidTemporalData,
-                        format!(
-                            "record `{}` has a non-positive validity interval",
-                            record.id
-                        ),
+                        format!("record `{}` has a non-positive validity interval", node.id),
                     ));
                 }
             }
 
-            let next = record
+            let next = node
                 .superseded_by
                 .as_deref()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
-            chain.push(record);
+            chain.push(node);
             if let Some(next) = next {
                 if chain.len() >= chain_cap {
                     return Ok(fail(
@@ -914,9 +960,10 @@ impl Store {
             break;
         }
 
-        let current = chain.last().expect("a fetched chain is non-empty").clone();
+        let current = chain.last().expect("a fetched chain is non-empty");
         if let Some(valid_from) = current.valid_from.as_deref().filter(|v| !v.is_empty()) {
-            let epoch = self.temporal_epoch(valid_from)?.expect("validated above");
+            let epoch =
+                Self::temporal_epoch_on(&transaction, valid_from)?.expect("validated above");
             if as_of < epoch {
                 return Ok(fail(
                     CurrentRecordErrorCode::NotYetValid,
@@ -925,7 +972,8 @@ impl Store {
             }
         }
         if let Some(valid_until) = current.valid_until.as_deref().filter(|v| !v.is_empty()) {
-            let epoch = self.temporal_epoch(valid_until)?.expect("validated above");
+            let epoch =
+                Self::temporal_epoch_on(&transaction, valid_until)?.expect("validated above");
             if as_of >= epoch {
                 return Ok(fail(
                     CurrentRecordErrorCode::ExpiredWithoutSuccessor,
@@ -937,8 +985,9 @@ impl Store {
             }
         }
 
-        let git_refs = self
-            .linked_commits(&current.id)?
+        let record = Self::get_record_any_on(&transaction, &current.id, true)?
+            .expect("authorized current metadata remains visible in its read snapshot");
+        let git_refs = Self::linked_commits_on(&transaction, &current.id)?
             .into_iter()
             .map(|(commit_hash, commit_subject)| GitRef {
                 commit_hash,
@@ -950,10 +999,43 @@ impl Store {
             as_of: as_of_iso,
             requested_id: id.to_string(),
             current_id: current.id.clone(),
-            record: Box::new(current),
+            record: Box::new(record),
             git_refs,
-            supersession_chain: chain.into_iter().map(|record| record.id).collect(),
+            supersession_chain: chain.into_iter().map(|node| node.id).collect(),
         })
+    }
+
+    fn current_node_on(
+        conn: &Connection,
+        id: &str,
+        scope: Option<&str>,
+    ) -> Result<Option<CurrentNode>> {
+        let read = |row: &rusqlite::Row<'_>| {
+            Ok(CurrentNode {
+                id: row.get(0)?,
+                superseded_by: row.get(1)?,
+                valid_from: row.get(2)?,
+                valid_until: row.get(3)?,
+            })
+        };
+        match scope {
+            Some(scope) => Ok(conn
+                .query_row(
+                    "SELECT id,superseded_by,valid_from,valid_until
+                     FROM decisions WHERE id=?1 AND scope=?2",
+                    params![id, scope],
+                    read,
+                )
+                .optional()?),
+            None => Ok(conn
+                .query_row(
+                    "SELECT id,superseded_by,valid_from,valid_until
+                     FROM decisions WHERE id=?1",
+                    params![id],
+                    read,
+                )
+                .optional()?),
+        }
     }
 
     /// Return one evidence-bearing page from the exact forward supersession
@@ -2513,6 +2595,203 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn scoped_current_hides_foreign_and_absent_nodes_without_mutating_state() {
+        let store = temp_store();
+        store
+            .import_external(&[
+                history_row("root", Some("middle"), "scope-a", "root body"),
+                history_row("middle", Some("foreign"), "scope-a", "middle body"),
+                history_row(
+                    "foreign",
+                    None,
+                    "scope-b",
+                    "foreign body sentinel 2099-01-01T00:00:00Z",
+                ),
+            ])
+            .unwrap();
+        store
+            .link_git("foreign", "foreign-commit", "Foreign evidence sentinel")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE decisions
+                 SET content=CAST(zeroblob(8388608) AS TEXT), importance=X'FF',
+                     superseded_by=X'FF', valid_from=X'FF', valid_until=42
+                 WHERE id='foreign'",
+                [],
+            )
+            .unwrap();
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+        let changes_before_foreign = store.conn.total_changes();
+        let foreign = store
+            .get_current_evidence_in_scope_at("root", "scope-a", as_of, 64)
+            .unwrap();
+        assert_eq!(store.conn.total_changes(), changes_before_foreign);
+
+        store
+            .conn
+            .execute(
+                "UPDATE decisions SET superseded_by='absent' WHERE id='middle'",
+                [],
+            )
+            .unwrap();
+        let changes_before_absent = store.conn.total_changes();
+        let absent = store
+            .get_current_evidence_in_scope_at("root", "scope-a", as_of + 60, 64)
+            .unwrap();
+        assert_eq!(store.conn.total_changes(), changes_before_absent);
+
+        let normalize = |resolution: CurrentRecordResolution| {
+            let mut value = serde_json::to_value(resolution).unwrap();
+            value["as_of"] = serde_json::Value::String("normalized".to_owned());
+            value
+        };
+        let foreign = normalize(foreign);
+        let absent = normalize(absent);
+        assert_eq!(foreign, absent);
+        assert_eq!(foreign["contract"], CURRENT_RATIONALE_CONTRACT);
+        assert_eq!(foreign["code"], "broken_chain");
+        assert_eq!(
+            foreign["message"],
+            "supersession chain is unavailable in the requested scope"
+        );
+        let wire = serde_json::to_string(&foreign).unwrap();
+        for secret in [
+            "foreign",
+            "2099-01-01T00:00:00Z",
+            "foreign body sentinel",
+            "foreign-commit",
+            "Foreign evidence sentinel",
+        ] {
+            assert!(!wire.contains(secret), "scoped error leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn scoped_current_makes_wrong_scope_root_indistinguishable_from_absence() {
+        let wrong_scope_store = temp_store();
+        wrong_scope_store
+            .import_external(&[history_row("same-id", None, "scope-b", "foreign root body")])
+            .unwrap();
+        wrong_scope_store
+            .conn
+            .execute(
+                "UPDATE decisions
+                 SET content=CAST(zeroblob(8388608) AS TEXT), importance=X'FF',
+                     superseded_by=X'FF', valid_from=X'FF', valid_until=42
+                 WHERE id='same-id'",
+                [],
+            )
+            .unwrap();
+        let absent_store = temp_store();
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+
+        let changes_before_wrong_scope = wrong_scope_store.conn.total_changes();
+        let wrong_scope = wrong_scope_store
+            .get_current_evidence_in_scope_at("same-id", "scope-a", as_of, 64)
+            .unwrap();
+        assert_eq!(
+            wrong_scope_store.conn.total_changes(),
+            changes_before_wrong_scope
+        );
+        let changes_before_absent = absent_store.conn.total_changes();
+        let absent = absent_store
+            .get_current_evidence_in_scope_at("same-id", "scope-a", as_of, 64)
+            .unwrap();
+        assert_eq!(absent_store.conn.total_changes(), changes_before_absent);
+        let wrong_scope = serde_json::to_value(wrong_scope).unwrap();
+        assert_eq!(wrong_scope["contract"], CURRENT_RATIONALE_CONTRACT);
+        assert_eq!(wrong_scope, serde_json::to_value(absent).unwrap());
+    }
+
+    #[test]
+    fn current_evidence_uses_one_snapshot_then_observes_the_next_complete_snapshot() {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "open-why-current-snapshot-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("current.db");
+        let store = Store::open_with_embedder(&path, None).unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .unwrap();
+        store
+            .import_external(&[
+                history_row("snapshot-root", Some("snapshot-old"), "scope-a", "root"),
+                history_row("snapshot-old", None, "scope-a", "old current body"),
+                history_row("snapshot-new", None, "scope-a", "pending new body"),
+            ])
+            .unwrap();
+        store
+            .link_git("snapshot-old", "old-commit", "Old evidence")
+            .unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        let as_of = iso_to_epoch("2026-03-01T00:00:00Z").unwrap();
+
+        let first = store
+            .get_current_evidence_at_with_scope_and_hook("snapshot-root", None, as_of, 64, || {
+                writer.execute_batch(
+                    "BEGIN IMMEDIATE;
+                         UPDATE decisions SET superseded_by='snapshot-new'
+                         WHERE id='snapshot-root';
+                         UPDATE decisions SET content='mutated old body'
+                         WHERE id='snapshot-old';
+                         UPDATE decisions SET content='new current body'
+                         WHERE id='snapshot-new';
+                         INSERT INTO decision_git_refs
+                         (decision_id,commit_hash,commit_subject)
+                         VALUES ('snapshot-new','new-commit','New evidence');
+                         COMMIT;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let CurrentRecordResolution::Ok {
+            current_id,
+            record,
+            git_refs,
+            supersession_chain,
+            ..
+        } = first
+        else {
+            panic!("expected old coherent snapshot");
+        };
+        assert_eq!(current_id, "snapshot-old");
+        assert_eq!(record.content, "old current body");
+        assert_eq!(supersession_chain, ["snapshot-root", "snapshot-old"]);
+        assert!(git_refs.iter().any(|item| item.commit_hash == "old-commit"));
+        assert!(!git_refs.iter().any(|item| item.commit_hash == "new-commit"));
+
+        let second = store
+            .get_current_evidence_at("snapshot-root", as_of, 64)
+            .unwrap();
+        let CurrentRecordResolution::Ok {
+            current_id,
+            record,
+            git_refs,
+            supersession_chain,
+            ..
+        } = second
+        else {
+            panic!("expected new coherent snapshot");
+        };
+        assert_eq!(current_id, "snapshot-new");
+        assert_eq!(record.content, "new current body");
+        assert_eq!(supersession_chain, ["snapshot-root", "snapshot-new"]);
+        assert!(git_refs.iter().any(|item| item.commit_hash == "new-commit"));
+        assert!(!git_refs.iter().any(|item| item.commit_hash == "old-commit"));
+
+        drop(writer);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

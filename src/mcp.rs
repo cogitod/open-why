@@ -1,9 +1,8 @@
 use crate::store::{
-    self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
-    CurrentRecordResolution, ExternalDecision, RationaleHistoryErrorCode,
-    RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
-    MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN,
-    RATIONALE_HISTORY_CONTRACT,
+    self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordResolution, ExternalDecision,
+    RationaleHistoryErrorCode, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
+    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
+    MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
 };
 use crate::{db, miner};
 use anyhow::Result;
@@ -992,32 +991,9 @@ fn previews(records: Vec<Record>) -> Vec<Value> {
 fn get_tool(store: &db::Store, args: &Value, as_of: i64) -> ToolResult {
     let scope = explicit_scope(args)?;
     let id = required_string(args, "id", MAX_ID_BYTES)?;
-    if !store
-        .record_belongs_to_scope(id, scope)
-        .map_err(ToolError::internal)?
-    {
-        let resolution = CurrentRecordResolution::Error {
-            contract: CURRENT_RATIONALE_CONTRACT,
-            as_of: db::epoch_to_iso(as_of),
-            requested_id: id.to_owned(),
-            code: CurrentRecordErrorCode::NotFound,
-            message: format!("record `{id}` was not found in scope `{scope}`"),
-            retryable: false,
-        };
-        let payload = serde_json::to_value(resolution).map_err(ToolError::internal)?;
-        return Err(ToolError::resolution(payload));
-    }
     let resolution = store
-        .get_current_evidence_at(id, as_of, MAX_SUPERSESSION_CHAIN)
+        .get_current_evidence_in_scope_at(id, scope, as_of, MAX_SUPERSESSION_CHAIN)
         .map_err(ToolError::internal)?;
-    if let CurrentRecordResolution::Ok { record, .. } = &resolution {
-        if record.scope != scope {
-            return Err(ToolError::new(
-                "not_found",
-                format!("record `{id}` was not found in scope `{scope}`"),
-            ));
-        }
-    }
     let payload = serde_json::to_value(&resolution).map_err(ToolError::internal)?;
     if tool_wire_size(&payload)? > MAX_RESPONSE_BYTES {
         return Err(ToolError::new(
@@ -1292,6 +1268,63 @@ mod tests {
             .collect();
         assert_eq!(payloads[0]["as_of"], "2023-11-14T22:13:20Z");
         assert_eq!(payloads[1]["as_of"], "2023-11-14T22:14:20Z");
+    }
+
+    #[test]
+    fn exact_get_matches_scoped_store_resolution_for_a_foreign_successor() {
+        let store = temp_store();
+        let row = |id: &str, successor: Option<&str>, scope: &str| ExternalDecision {
+            id: id.to_owned(),
+            kind: "decision".to_owned(),
+            title: format!("record {id}"),
+            content: format!("private body for {id}"),
+            importance: 0.5,
+            source: "synthetic".to_owned(),
+            author: "tester".to_owned(),
+            date: "2026-01-01".to_owned(),
+            updated_at: None,
+            accessed_count: None,
+            times_injected: None,
+            effectiveness: None,
+            tags: None,
+            scope: scope.to_owned(),
+            valid_from: Some("2026-01-01T00:00:00Z".to_owned()),
+            valid_until: successor.map(|_| "2026-02-01T00:00:00Z".to_owned()),
+            superseded_by: successor.map(str::to_owned),
+            fact_key: None,
+            git_refs: Vec::new(),
+        };
+        store
+            .import_external(&[
+                row("root", Some("middle"), "scope-a"),
+                row("middle", Some("foreign-successor"), "scope-a"),
+                row("foreign-successor", None, "scope-b"),
+            ])
+            .unwrap();
+        let as_of = 1_772_323_200;
+        let direct = serde_json::to_value(
+            store
+                .get_current_evidence_in_scope_at("root", "scope-a", as_of, 64)
+                .unwrap(),
+        )
+        .unwrap();
+        let error = dispatch_tool(
+            &store,
+            "open-why_get",
+            &json!({"id":"root","scope":"scope-a"}),
+            as_of,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.payload, direct);
+        assert_eq!(error.payload["code"], "broken_chain");
+        assert_eq!(
+            error.payload["message"],
+            "supersession chain is unavailable in the requested scope"
+        );
+        assert!(!serde_json::to_string(&error.payload)
+            .unwrap()
+            .contains("foreign-successor"));
     }
 
     #[test]
