@@ -52,11 +52,19 @@ cargo build --release --bin why-golden && ./target/release/why-golden --fixture 
 
 ## Opening a PR
 
+- Do not commit or push directly to `main`.
+- Fetch `origin/main`, then create a scoped topic branch from its current tip.
 - Link an issue if one exists.
 - Describe what changed and why. The rationale is part of the review evidence.
 - Note any behavior change, even a small one. Do not retune ranking constants
   without representative regression evidence.
-- `main` requires the CI checks (`leak-check`, `build-and-test`) to pass before merge.
+- At the latest PR head, review the complete final diff against current `main`.
+- Resolve every review conversation and wait for both required checks,
+  `leak-check` and `build-and-test`, to pass before merge.
+
+The branch policy requires zero approving reviews because open-why currently has one
+maintainer, who cannot approve their own PR. This avoids an impossible approval gate; it
+does not claim independent review.
 
 ## Reporting a security issue
 
