@@ -1,0 +1,6 @@
+pre-commit:
+  jobs:
+    - name: rust-loc
+      run: bash scripts/check-rust-loc.sh staged
+    - name: leak-check
+      run: bash hooks/check-leaks.sh staged

@@ -10,16 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Scan tracked files for secrets, record exports, and private provenance
         run: bash hooks/check-leaks.sh tracked
 
       - name: Test staged index leak-scan authority
         run: bash tests/check-leaks.sh
 
+      - name: Enforce tracked Rust file size
+        run: bash scripts/check-rust-loc.sh tracked
+
+      - name: Test Rust file-size enforcement
+        run: bash tests/check-rust-loc.sh
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
