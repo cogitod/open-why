@@ -40,7 +40,10 @@ Four primitives, each small and composable:
   realizes. Ask which decisions a commit realizes, or which commits realized a
   decision. Library consumers can resolve any stable record ID through
   `Store::get_current_evidence`: it follows supersession to the active record and
-  returns that record's Git references plus the explicit chain it traversed.
+  returns that record's Git references plus the explicit chain it traversed. MCP
+  consumers can invert that relationship with `open-why_commit_links`: an exact
+  commit hash and explicit scope return bounded directly-linked historical record
+  IDs, which remain separate from current-rationale resolution.
 - **Temporal identity** — `superseded_by`, `valid_from`, `valid_until`. Search
   hydrates the *current* version; history stays reachable. `--historical` (search,
   get, and MCP) reaches past supersession and walks the chain, so "what changed and

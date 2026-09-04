@@ -69,7 +69,8 @@ for h in hits {
 
 `why serve` speaks stdio MCP: `open-why_ask`, `open-why_index`,
 `open-why_capture`, `open-why_search`, `open-why_get`, `open-why_import`,
-`open-why_history`, `open-why_link`, `open-why_feedback`.
+`open-why_history`, `open-why_commit_links`, `open-why_link`,
+`open-why_feedback`.
 
 `open-why_get` resolves a stable ID to the complete current rationale under the
 `open-why.current-rationale/v1` contract. `open-why_history` pages forward from
@@ -77,6 +78,13 @@ that same ID through its exact supersession chain under
 `open-why.rationale-history/v1`; every returned record is complete and carries
 its own Git references. History cursors are stable record IDs from the prior
 page, not opaque offsets.
+
+`open-why_commit_links` performs an exact, case-sensitive commit-hash lookup in
+one explicit scope under `open-why.commit-links/v1`. It returns only directly
+linked stable record IDs and commit subjects in bounded pages; compose those IDs
+with `open-why_get` when complete current rationale and evidence are needed. A
+returned cursor is the inclusive first record of the next page, and each page is
+a fresh coherent database snapshot rather than a frozen export.
 
 ```jsonc
 // opencode: ~/.config/opencode/opencode.jsonc

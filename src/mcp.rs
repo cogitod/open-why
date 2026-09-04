@@ -1,7 +1,9 @@
 use crate::store::{
-    self, CurrentRecordErrorCode, CurrentRecordResolution, ExternalDecision,
-    RationaleHistoryErrorCode, RationaleHistoryResolution, Record, CURRENT_RATIONALE_CONTRACT,
-    MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
+    self, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
+    CurrentRecordResolution, ExternalDecision, RationaleHistoryErrorCode,
+    RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
+    MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN,
+    RATIONALE_HISTORY_CONTRACT,
 };
 use crate::{db, miner};
 use anyhow::Result;
@@ -10,7 +12,11 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 const MCP_ERROR_CONTRACT: &str = "open-why.mcp-tool-error/v1";
-const MCP_CONTRACTS: &[&str] = &[CURRENT_RATIONALE_CONTRACT, RATIONALE_HISTORY_CONTRACT];
+const MCP_CONTRACTS: &[&str] = &[
+    CURRENT_RATIONALE_CONTRACT,
+    RATIONALE_HISTORY_CONTRACT,
+    COMMIT_LINKS_CONTRACT,
+];
 const MAX_QUERY_BYTES: usize = 4 * 1024;
 const MAX_RESULT_COUNT: usize = 100;
 const MAX_PREVIEW_BYTES: usize = 512;
@@ -34,6 +40,7 @@ enum ToolKind {
     Search,
     Get,
     History,
+    CommitLinks,
     Link,
     Feedback,
 }
@@ -80,6 +87,11 @@ const TOOL_SPECS: &[ToolSpec] = &[
         name: "open-why_history",
         description: "Page one exact supersession chain with complete records and Git evidence.",
         kind: ToolKind::History,
+    },
+    ToolSpec {
+        name: "open-why_commit_links",
+        description: "Page exact direct rationale links for one Git commit hash and scope.",
+        kind: ToolKind::CommitLinks,
     },
     ToolSpec {
         name: "open-why_link",
@@ -223,6 +235,15 @@ fn input_schema(kind: ToolKind) -> Value {
                 "cursor":{"type":"string","maxLength":MAX_ID_BYTES}
             }),
             &["id", "scope"],
+        ),
+        ToolKind::CommitLinks => object_schema(
+            json!({
+                "scope":{"type":"string","maxLength":MAX_AUTHORITY_BYTES},
+                "commit":{"type":"string","maxLength":MAX_GIT_HASH_BYTES},
+                "limit":{"type":"integer","minimum":1,"maximum":MAX_COMMIT_LINKS_PAGE_RECORDS},
+                "cursor":{"type":"string","maxLength":MAX_ID_BYTES}
+            }),
+            &["scope", "commit"],
         ),
         ToolKind::Link => object_schema(
             json!({
@@ -469,6 +490,7 @@ fn dispatch_tool(store: &db::Store, name: &str, args: &Value, as_of: i64) -> Too
         ToolKind::Search => search_tool(store, args),
         ToolKind::Get => with_as_of(get_tool(store, args, as_of), as_of),
         ToolKind::History => with_as_of(history_tool(store, args, as_of), as_of),
+        ToolKind::CommitLinks => commit_links_tool(store, args),
         ToolKind::Link => link_tool(store, args),
         ToolKind::Feedback => feedback_tool(store, args),
     }
@@ -506,6 +528,32 @@ fn required_string<'a>(
         return Err(ToolError::new(
             "limit_exceeded",
             format!("`{key}` exceeds {max_bytes} UTF-8 bytes"),
+        ));
+    }
+    Ok(value)
+}
+
+fn required_exact_non_blank_string<'a>(
+    args: &'a Value,
+    key: &str,
+    max_bytes: usize,
+) -> std::result::Result<&'a str, ToolError> {
+    let Some(value) = args.get(key).and_then(Value::as_str) else {
+        return Err(ToolError::new(
+            "invalid_arguments",
+            format!("`{key}` is required and must be a string"),
+        ));
+    };
+    if value.len() > max_bytes {
+        return Err(ToolError::new(
+            "limit_exceeded",
+            format!("`{key}` exceeds {max_bytes} UTF-8 bytes"),
+        ));
+    }
+    if value.trim().is_empty() {
+        return Err(ToolError::new(
+            "invalid_arguments",
+            format!("`{key}` must not be empty"),
         ));
     }
     Ok(value)
@@ -1030,6 +1078,60 @@ fn history_tool(store: &db::Store, args: &Value, as_of: i64) -> ToolResult {
     }
 }
 
+fn commit_links_tool(store: &db::Store, args: &Value) -> ToolResult {
+    let scope = required_exact_non_blank_string(args, "scope", MAX_AUTHORITY_BYTES)?;
+    let commit = required_exact_non_blank_string(args, "commit", MAX_GIT_HASH_BYTES)?;
+    let cursor = match optional_string(args, "cursor", MAX_ID_BYTES)? {
+        Some(cursor) if cursor.trim().is_empty() => {
+            return Err(ToolError::new(
+                "invalid_arguments",
+                "`cursor` must not be empty",
+            ));
+        }
+        Some(cursor) => Some(cursor),
+        None => None,
+    };
+    let limit = match args.get("limit") {
+        None => MAX_COMMIT_LINKS_PAGE_RECORDS,
+        Some(value) => {
+            let Some(limit) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+                return Err(ToolError::new(
+                    "invalid_arguments",
+                    "`limit` must be an integer",
+                ));
+            };
+            if !(1..=MAX_COMMIT_LINKS_PAGE_RECORDS).contains(&limit) {
+                return Err(ToolError::new(
+                    "limit_exceeded",
+                    format!("`limit` must be from 1 to {MAX_COMMIT_LINKS_PAGE_RECORDS}"),
+                ));
+            }
+            limit
+        }
+    };
+
+    let resolution = store
+        .get_commit_links(scope, commit, cursor, limit)
+        .map_err(ToolError::internal)?;
+    let payload = serde_json::to_value(&resolution).map_err(ToolError::internal)?;
+    if tool_wire_size(&payload)? > MAX_RESPONSE_BYTES {
+        let oversized = CommitLinksResolution::Error {
+            contract: COMMIT_LINKS_CONTRACT,
+            code: CommitLinksErrorCode::ResponseTooLarge,
+            message: "commit links response cannot be returned within the response byte limit"
+                .to_owned(),
+            retryable: false,
+        };
+        return Err(ToolError::resolution(
+            serde_json::to_value(oversized).map_err(ToolError::internal)?,
+        ));
+    }
+    match resolution {
+        CommitLinksResolution::Ok { .. } => Ok(payload),
+        CommitLinksResolution::Error { .. } => Err(ToolError::resolution(payload)),
+    }
+}
+
 fn link_tool(store: &db::Store, args: &Value) -> ToolResult {
     let scope = explicit_scope(args)?;
     let decision = required_string(args, "decision", MAX_ID_BYTES)?;
@@ -1440,5 +1542,161 @@ mod tests {
         assert_eq!(oversized.payload["contract"], RATIONALE_HISTORY_CONTRACT);
         assert_eq!(oversized.payload["code"], "response_too_large");
         assert_eq!(oversized.payload["as_of"], "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn exact_commit_links_preserve_whitespace_bearing_identities() {
+        let store = temp_store();
+        let scope = " scope-a ";
+        let commit = " exact-hash ";
+        for (id, subject) in [(" record-a ", "first"), (" record-b ", "second")] {
+            store
+                .import_external(&[ExternalDecision {
+                    id: id.to_owned(),
+                    kind: "decision".to_owned(),
+                    title: id.to_owned(),
+                    content: "body must not be returned".to_owned(),
+                    importance: 0.5,
+                    source: "synthetic".to_owned(),
+                    author: "tester".to_owned(),
+                    date: "2026-01-01".to_owned(),
+                    updated_at: None,
+                    accessed_count: None,
+                    times_injected: None,
+                    effectiveness: None,
+                    tags: None,
+                    scope: scope.to_owned(),
+                    valid_from: None,
+                    valid_until: None,
+                    superseded_by: None,
+                    fact_key: None,
+                    git_refs: vec![store::GitRef {
+                        commit_hash: commit.to_owned(),
+                        commit_subject: subject.to_owned(),
+                    }],
+                }])
+                .unwrap();
+        }
+
+        let first = dispatch_tool(
+            &store,
+            "open-why_commit_links",
+            &json!({"scope":scope,"commit":commit,"limit":1}),
+            0,
+        )
+        .unwrap();
+        assert_eq!(first["scope"], scope);
+        assert_eq!(first["commit"], commit);
+        assert_eq!(first["items"][0]["record_id"], " record-a ");
+        assert_eq!(first["next_cursor"], " record-b ");
+
+        for arguments in [
+            json!({"scope":"scope-a","commit":commit}),
+            json!({"scope":scope,"commit":"exact-hash"}),
+        ] {
+            let error = dispatch_tool(&store, "open-why_commit_links", &arguments, 0).unwrap_err();
+            assert_eq!(error.payload["code"], "not_found");
+        }
+
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second = dispatch_tool(
+            &store,
+            "open-why_commit_links",
+            &json!({"scope":scope,"commit":commit,"limit":1,"cursor":cursor}),
+            0,
+        )
+        .unwrap();
+        assert_eq!(second["items"][0]["record_id"], " record-b ");
+        assert_eq!(second["next_cursor"], Value::Null);
+
+        let trimmed_cursor = dispatch_tool(
+            &store,
+            "open-why_commit_links",
+            &json!({"scope":scope,"commit":commit,"cursor":"record-b"}),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(trimmed_cursor.payload["code"], "invalid_cursor");
+    }
+
+    #[test]
+    fn exact_commit_links_validate_bounds_and_fail_closed_on_oversize() {
+        let store = temp_store();
+        let record = ExternalDecision {
+            id: "linked-record".to_owned(),
+            kind: "decision".to_owned(),
+            title: "linked record".to_owned(),
+            content: "body must not be returned".to_owned(),
+            importance: 0.5,
+            source: "synthetic".to_owned(),
+            author: "tester".to_owned(),
+            date: "2026-01-01".to_owned(),
+            updated_at: None,
+            accessed_count: None,
+            times_injected: None,
+            effectiveness: None,
+            tags: None,
+            scope: "scope-a".to_owned(),
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            fact_key: None,
+            git_refs: vec![store::GitRef {
+                commit_hash: "exact-hash".to_owned(),
+                commit_subject: "s".repeat(MAX_GIT_SUBJECT_BYTES + 1),
+            }],
+        };
+        store.import_external(&[record]).unwrap();
+
+        for invalid_limit in [json!(0), json!(21), json!("20")] {
+            let error = dispatch_tool(
+                &store,
+                "open-why_commit_links",
+                &json!({"scope":"scope-a","commit":"exact-hash","limit":invalid_limit}),
+                0,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error.payload["code"].as_str(),
+                Some("limit_exceeded" | "invalid_arguments")
+            ));
+        }
+        for (scope, commit) in [("   ", "exact-hash"), ("scope-a", "   ")] {
+            let error = dispatch_tool(
+                &store,
+                "open-why_commit_links",
+                &json!({"scope":scope,"commit":commit}),
+                0,
+            )
+            .unwrap_err();
+            assert_eq!(error.payload["code"], "invalid_arguments");
+        }
+        for arguments in [
+            json!({"scope":" ".repeat(MAX_AUTHORITY_BYTES + 1),"commit":"exact-hash"}),
+            json!({"scope":"scope-a","commit":" ".repeat(MAX_GIT_HASH_BYTES + 1)}),
+            json!({"scope":"scope-a","commit":"exact-hash","cursor":" ".repeat(MAX_ID_BYTES + 1)}),
+        ] {
+            let error = dispatch_tool(&store, "open-why_commit_links", &arguments, 0).unwrap_err();
+            assert_eq!(error.payload["code"], "limit_exceeded");
+        }
+        let unknown = dispatch_tool(
+            &store,
+            "open-why_commit_links",
+            &json!({"scope":"scope-a","commit":"exact-hash","unexpected":true}),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(unknown.payload["code"], "invalid_arguments");
+
+        let oversized = dispatch_tool(
+            &store,
+            "open-why_commit_links",
+            &json!({"scope":"scope-a","commit":"exact-hash"}),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(oversized.payload["contract"], COMMIT_LINKS_CONTRACT);
+        assert_eq!(oversized.payload["code"], "response_too_large");
+        assert!(oversized.payload.get("content").is_none());
     }
 }

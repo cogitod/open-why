@@ -41,8 +41,9 @@ pub mod store;
 pub use db::{default_path, RankExplanation, Store};
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
 pub use store::{
-    CurrentRecordErrorCode, CurrentRecordResolution, Decision, ExternalDecision, GitRef,
-    RationaleHistoryErrorCode, RationaleHistoryRecord, RationaleHistoryResolution, Record,
-    CURRENT_RATIONALE_CONTRACT, MAX_HISTORY_PAGE_RECORDS, MAX_SUPERSESSION_CHAIN,
-    RATIONALE_HISTORY_CONTRACT,
+    CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
+    CurrentRecordResolution, Decision, ExternalDecision, GitRef, RationaleHistoryErrorCode,
+    RationaleHistoryRecord, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
+    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_HISTORY_PAGE_RECORDS,
+    MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
 };

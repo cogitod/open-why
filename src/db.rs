@@ -1,9 +1,12 @@
 use crate::embed::Embedder;
 use crate::store::{
-    CurrentRecordErrorCode, CurrentRecordResolution, Decision, ExternalDecision, GitRef,
-    RationaleHistoryErrorCode, RationaleHistoryRecord, RationaleHistoryResolution, Record,
-    CURRENT_RATIONALE_CONTRACT, MAX_HISTORY_PAGE_GIT_REFS, MAX_HISTORY_PAGE_RECORDS,
-    MAX_HISTORY_PAGE_SOURCE_BYTES, MAX_SUPERSESSION_CHAIN, RATIONALE_HISTORY_CONTRACT,
+    CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
+    CurrentRecordResolution, Decision, ExternalDecision, GitRef, RationaleHistoryErrorCode,
+    RationaleHistoryRecord, RationaleHistoryResolution, Record, COMMIT_LINKS_CONTRACT,
+    CURRENT_RATIONALE_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES,
+    MAX_COMMIT_LINK_RECORD_ID_BYTES, MAX_COMMIT_LINK_SUBJECT_BYTES, MAX_HISTORY_PAGE_GIT_REFS,
+    MAX_HISTORY_PAGE_RECORDS, MAX_HISTORY_PAGE_SOURCE_BYTES, MAX_SUPERSESSION_CHAIN,
+    RATIONALE_HISTORY_CONTRACT,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -123,7 +126,9 @@ impl Store {
                 commit_subject TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (decision_id, commit_hash)
-             );",
+             );
+             CREATE INDEX IF NOT EXISTS idx_decision_git_refs_commit_hash_decision
+               ON decision_git_refs(commit_hash, decision_id);",
         )?;
         self.ensure_column("valid_from", "TEXT")?;
         self.ensure_column("fact_key", "TEXT")?;
@@ -648,6 +653,158 @@ impl Store {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    pub fn get_commit_links(
+        &self,
+        scope: &str,
+        commit: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<CommitLinksResolution> {
+        anyhow::ensure!(
+            (1..=MAX_COMMIT_LINKS_PAGE_RECORDS).contains(&limit),
+            "commit-link page limit must be from 1 to {MAX_COMMIT_LINKS_PAGE_RECORDS}"
+        );
+        self.get_commit_links_with_hook(scope, commit, cursor, limit, || Ok(()))
+    }
+
+    fn get_commit_links_with_hook(
+        &self,
+        scope: &str,
+        commit: &str,
+        cursor: Option<&str>,
+        limit: usize,
+        after_snapshot: impl FnOnce() -> Result<()>,
+    ) -> Result<CommitLinksResolution> {
+        debug_assert!((1..=MAX_COMMIT_LINKS_PAGE_RECORDS).contains(&limit));
+        let fail = |code, message: &str| CommitLinksResolution::Error {
+            contract: COMMIT_LINKS_CONTRACT,
+            code,
+            message: message.to_owned(),
+            retryable: false,
+        };
+        let transaction = self.conn.unchecked_transaction()?;
+
+        if let Some(cursor) = cursor {
+            let cursor_exists: bool = transaction.query_row(
+                "SELECT EXISTS(
+                     SELECT 1
+                     FROM decision_git_refs AS refs
+                     JOIN decisions AS decisions ON decisions.id=refs.decision_id
+                     WHERE decisions.scope=?1 AND refs.commit_hash=?2
+                       AND refs.decision_id=?3
+                 )",
+                params![scope, commit, cursor],
+                |row| row.get(0),
+            )?;
+            if !cursor_exists {
+                return Ok(fail(
+                    CommitLinksErrorCode::InvalidCursor,
+                    "cursor is not an authorized direct link for this exact scope and commit",
+                ));
+            }
+        }
+
+        // This bounded aggregate establishes the read snapshot and validates
+        // every string that can enter the selected page before hydrating it.
+        let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+        let (selected_count, max_id_bytes, max_subject_bytes, selected_bytes): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = transaction.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(MAX(record_id_bytes),0),
+                    COALESCE(MAX(subject_bytes),0),
+                    COALESCE(SUM(record_id_bytes + subject_bytes),0)
+             FROM (
+                 SELECT length(CAST(refs.decision_id AS BLOB)) AS record_id_bytes,
+                        length(CAST(refs.commit_subject AS BLOB)) AS subject_bytes
+                 FROM decision_git_refs AS refs
+                 JOIN decisions AS decisions ON decisions.id=refs.decision_id
+                 WHERE decisions.scope=?1 AND refs.commit_hash=?2
+                   AND (?3 IS NULL OR refs.decision_id >= ?3)
+                 ORDER BY refs.decision_id ASC
+                 LIMIT ?4
+             )",
+            params![scope, commit, cursor, limit_i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if selected_count == 0 {
+            return Ok(fail(
+                CommitLinksErrorCode::NotFound,
+                "no direct rationale links were found in the requested scope",
+            ));
+        }
+        if usize::try_from(max_id_bytes).unwrap_or(usize::MAX) > MAX_COMMIT_LINK_RECORD_ID_BYTES
+            || usize::try_from(max_subject_bytes).unwrap_or(usize::MAX)
+                > MAX_COMMIT_LINK_SUBJECT_BYTES
+            || usize::try_from(selected_bytes).unwrap_or(usize::MAX)
+                > MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES
+        {
+            return Ok(fail(
+                CommitLinksErrorCode::ResponseTooLarge,
+                "commit links response exceeds the bounded exact-read budget",
+            ));
+        }
+
+        after_snapshot()?;
+
+        let mut statement = transaction.prepare(
+            "SELECT refs.decision_id,refs.commit_subject
+             FROM decision_git_refs AS refs
+             JOIN decisions AS decisions ON decisions.id=refs.decision_id
+             WHERE decisions.scope=?1 AND refs.commit_hash=?2
+               AND (?3 IS NULL OR refs.decision_id >= ?3)
+             ORDER BY refs.decision_id ASC
+             LIMIT ?4",
+        )?;
+        let items = statement
+            .query_map(params![scope, commit, cursor, limit_i64], |row| {
+                Ok(CommitLinkItem {
+                    record_id: row.get(0)?,
+                    commit_subject: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let next: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT refs.decision_id,length(CAST(refs.decision_id AS BLOB))
+                 FROM decision_git_refs AS refs
+                 JOIN decisions AS decisions ON decisions.id=refs.decision_id
+                 WHERE decisions.scope=?1 AND refs.commit_hash=?2
+                   AND (?3 IS NULL OR refs.decision_id >= ?3)
+                 ORDER BY refs.decision_id ASC
+                 LIMIT 1 OFFSET ?4",
+                params![scope, commit, cursor, limit_i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let next_cursor = match next {
+            Some((_, id_bytes))
+                if usize::try_from(id_bytes).unwrap_or(usize::MAX)
+                    > MAX_COMMIT_LINK_RECORD_ID_BYTES =>
+            {
+                return Ok(fail(
+                    CommitLinksErrorCode::ResponseTooLarge,
+                    "commit links response exceeds the bounded exact-read budget",
+                ));
+            }
+            Some((id, _)) => Some(id),
+            None => None,
+        };
+
+        Ok(CommitLinksResolution::Ok {
+            contract: COMMIT_LINKS_CONTRACT,
+            scope: scope.to_owned(),
+            commit: commit.to_owned(),
+            items,
+            next_cursor,
+        })
     }
 
     /// Resolve a stable record ID to the current, evidence-bearing end of its
@@ -2777,6 +2934,283 @@ mod tests {
                 RationaleHistoryResolution::Ok { .. }
             ));
         }
+    }
+
+    #[test]
+    fn commit_links_page_exact_hashes_and_fail_closed_authority() {
+        let store = temp_store();
+        store
+            .import_external(&[
+                history_row("link-a", None, "scope-a", "a"),
+                history_row("link-b", None, "scope-a", "b"),
+                history_row("link-c", None, "scope-a", "c"),
+                history_row("link-case", None, "scope-a", "case"),
+                history_row("link-prefix", None, "scope-a", "prefix"),
+                history_row("link-suffix", None, "scope-a", "suffix"),
+                history_row("foreign-link", None, "scope-b", "foreign"),
+                history_row("retired-link", Some("current-link"), "scope-a", "retired"),
+                history_row("current-link", None, "scope-a", "current"),
+            ])
+            .unwrap();
+        for (id, commit, subject) in [
+            ("link-c", "ExactHash", "subject c"),
+            ("link-a", "ExactHash", "subject a"),
+            ("link-b", "ExactHash", "subject b"),
+            ("link-case", "exacthash", "case variant"),
+            ("link-prefix", "xExactHash", "prefix variant"),
+            ("link-suffix", "ExactHashx", "suffix variant"),
+            ("foreign-link", "ExactHash", "foreign mixed scope"),
+            ("foreign-link", "foreign-only", "foreign only"),
+            ("retired-link", "retired-commit", "historical evidence"),
+        ] {
+            store.link_git(id, commit, subject).unwrap();
+        }
+        store
+            .conn
+            .execute(
+                "INSERT INTO decision_git_refs
+                 (decision_id,commit_hash,commit_subject)
+                 VALUES ('orphan-id','orphan-only','orphan')",
+                [],
+            )
+            .unwrap();
+
+        let first = store
+            .get_commit_links("scope-a", "ExactHash", None, 2)
+            .unwrap();
+        let CommitLinksResolution::Ok {
+            items, next_cursor, ..
+        } = first
+        else {
+            panic!("expected first commit-link page");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.record_id.as_str())
+                .collect::<Vec<_>>(),
+            ["link-a", "link-b"]
+        );
+        assert_eq!(items[0].commit_subject, "subject a");
+        assert_eq!(next_cursor.as_deref(), Some("link-c"));
+
+        let second = store
+            .get_commit_links("scope-a", "ExactHash", Some("link-c"), 2)
+            .unwrap();
+        let CommitLinksResolution::Ok {
+            items, next_cursor, ..
+        } = second
+        else {
+            panic!("expected second commit-link page");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].record_id, "link-c");
+        assert_eq!(next_cursor, None);
+
+        for exact_variant in ["exacthash", "xExactHash", "ExactHashx"] {
+            let CommitLinksResolution::Ok { items, .. } = store
+                .get_commit_links("scope-a", exact_variant, None, 20)
+                .unwrap()
+            else {
+                panic!("expected isolated exact-hash result");
+            };
+            assert_eq!(items.len(), 1);
+        }
+
+        let error_shape = |resolution| match resolution {
+            CommitLinksResolution::Error { code, message, .. } => (code, message),
+            CommitLinksResolution::Ok { .. } => panic!("expected commit-link error"),
+        };
+        let absent = error_shape(
+            store
+                .get_commit_links("scope-a", "absent", None, 20)
+                .unwrap(),
+        );
+        for (scope, commit) in [
+            ("scope-missing", "ExactHash"),
+            ("scope-a", "foreign-only"),
+            ("scope-a", "orphan-only"),
+        ] {
+            assert_eq!(
+                error_shape(store.get_commit_links(scope, commit, None, 20).unwrap()),
+                absent
+            );
+        }
+        assert!(!absent.1.contains("foreign-only"));
+        assert!(!absent.1.contains("orphan-id"));
+
+        assert!(matches!(
+            store
+                .get_commit_links("scope-a", "ExactHash", Some("link-case"), 2)
+                .unwrap(),
+            CommitLinksResolution::Error {
+                code: CommitLinksErrorCode::InvalidCursor,
+                ..
+            }
+        ));
+        store.link_git("link-a", "removed-cursor", "a").unwrap();
+        store.link_git("link-b", "removed-cursor", "b").unwrap();
+        let CommitLinksResolution::Ok { next_cursor, .. } = store
+            .get_commit_links("scope-a", "removed-cursor", None, 1)
+            .unwrap()
+        else {
+            panic!("expected cursor fixture page");
+        };
+        let removed = next_cursor.unwrap();
+        store
+            .conn
+            .execute(
+                "DELETE FROM decision_git_refs
+                 WHERE decision_id=?1 AND commit_hash='removed-cursor'",
+                params![removed],
+            )
+            .unwrap();
+        assert!(matches!(
+            store
+                .get_commit_links("scope-a", "removed-cursor", Some(&removed), 1)
+                .unwrap(),
+            CommitLinksResolution::Error {
+                code: CommitLinksErrorCode::InvalidCursor,
+                ..
+            }
+        ));
+
+        let CommitLinksResolution::Ok { items, .. } = store
+            .get_commit_links("scope-a", "retired-commit", None, 20)
+            .unwrap()
+        else {
+            panic!("expected historical direct link");
+        };
+        assert_eq!(items[0].record_id, "retired-link");
+        let CurrentRecordResolution::Ok { current_id, .. } = store
+            .get_current_evidence_at("retired-link", now_epoch(), 64)
+            .unwrap()
+        else {
+            panic!("expected current resolution");
+        };
+        assert_eq!(current_id, "current-link");
+    }
+
+    #[test]
+    fn commit_links_reject_oversized_subject_and_aggregate() {
+        let store = temp_store();
+        let mut rows = Vec::new();
+        for index in 0..20 {
+            rows.push(history_row(
+                &format!("budget-{index:02}"),
+                None,
+                "scope-a",
+                "body",
+            ));
+        }
+        rows.push(history_row("oversized-subject", None, "scope-a", "body"));
+        store.import_external(&rows).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO decision_git_refs
+                 (decision_id,commit_hash,commit_subject) VALUES (?1,?2,?3)",
+                params![
+                    "oversized-subject",
+                    "oversized-subject-commit",
+                    "s".repeat(MAX_COMMIT_LINK_SUBJECT_BYTES + 1)
+                ],
+            )
+            .unwrap();
+        assert!(matches!(
+            store
+                .get_commit_links("scope-a", "oversized-subject-commit", None, 20)
+                .unwrap(),
+            CommitLinksResolution::Error {
+                code: CommitLinksErrorCode::ResponseTooLarge,
+                ..
+            }
+        ));
+
+        let bounded_subject = "e".repeat(MAX_COMMIT_LINK_SUBJECT_BYTES);
+        for index in 0..20 {
+            store
+                .link_git(
+                    &format!("budget-{index:02}"),
+                    "aggregate-budget",
+                    &bounded_subject,
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            store
+                .get_commit_links("scope-a", "aggregate-budget", None, 20)
+                .unwrap(),
+            CommitLinksResolution::Error {
+                code: CommitLinksErrorCode::ResponseTooLarge,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn commit_links_use_one_snapshot_despite_concurrent_matching_insert() {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "open-why-commit-links-snapshot-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("links.db");
+        let store = Store::open_with_embedder(&path, None).unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .unwrap();
+        store
+            .import_external(&[
+                history_row("snapshot-a", None, "scope-a", "a"),
+                history_row("snapshot-b", None, "scope-a", "b"),
+                history_row("snapshot-c", None, "scope-a", "c"),
+            ])
+            .unwrap();
+        store.link_git("snapshot-a", "snapshot-hash", "a").unwrap();
+        store.link_git("snapshot-c", "snapshot-hash", "c").unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+
+        let resolution = store
+            .get_commit_links_with_hook("scope-a", "snapshot-hash", None, 20, || {
+                writer.execute(
+                    "INSERT INTO decision_git_refs
+                     (decision_id,commit_hash,commit_subject)
+                     VALUES ('snapshot-b','snapshot-hash','b')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let CommitLinksResolution::Ok { items, .. } = resolution else {
+            panic!("expected coherent snapshot");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.record_id.as_str())
+                .collect::<Vec<_>>(),
+            ["snapshot-a", "snapshot-c"]
+        );
+        let CommitLinksResolution::Ok { items, .. } = store
+            .get_commit_links("scope-a", "snapshot-hash", None, 20)
+            .unwrap()
+        else {
+            panic!("expected live post-commit snapshot");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.record_id.as_str())
+                .collect::<Vec<_>>(),
+            ["snapshot-a", "snapshot-b", "snapshot-c"]
+        );
+        drop(writer);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

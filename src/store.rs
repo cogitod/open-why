@@ -3,10 +3,15 @@ use std::path::{Path, PathBuf};
 
 pub const CURRENT_RATIONALE_CONTRACT: &str = "open-why.current-rationale/v1";
 pub const RATIONALE_HISTORY_CONTRACT: &str = "open-why.rationale-history/v1";
+pub const COMMIT_LINKS_CONTRACT: &str = "open-why.commit-links/v1";
 pub const MAX_SUPERSESSION_CHAIN: usize = 64;
 pub const MAX_HISTORY_PAGE_RECORDS: usize = 3;
+pub const MAX_COMMIT_LINKS_PAGE_RECORDS: usize = 20;
 pub(crate) const MAX_HISTORY_PAGE_SOURCE_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const MAX_HISTORY_PAGE_GIT_REFS: usize = 300;
+pub(crate) const MAX_COMMIT_LINK_SUBJECT_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_COMMIT_LINK_RECORD_ID_BYTES: usize = 512;
+pub(crate) const MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
@@ -154,6 +159,42 @@ pub enum RationaleHistoryResolution {
         as_of: String,
         requested_id: String,
         code: RationaleHistoryErrorCode,
+        message: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitLinksErrorCode {
+    NotFound,
+    InvalidCursor,
+    ResponseTooLarge,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitLinkItem {
+    pub record_id: String,
+    pub commit_subject: String,
+}
+
+/// A bounded exact-hash lookup of direct rationale links.
+///
+/// Record IDs remain historical identities; callers compose with
+/// `get_current_evidence` when they need the current rationale.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CommitLinksResolution {
+    Ok {
+        contract: &'static str,
+        scope: String,
+        commit: String,
+        items: Vec<CommitLinkItem>,
+        next_cursor: Option<String>,
+    },
+    Error {
+        contract: &'static str,
+        code: CommitLinksErrorCode,
         message: String,
         retryable: bool,
     },

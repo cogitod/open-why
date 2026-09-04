@@ -110,7 +110,8 @@ fn initialize(server: &mut Server, id: u64) -> (String, String) {
     assert_eq!(init["result"]["serverInfo"]["name"], "open-why");
     let expected_contracts = json!([
         "open-why.current-rationale/v1",
-        "open-why.rationale-history/v1"
+        "open-why.rationale-history/v1",
+        "open-why.commit-links/v1"
     ]);
     let init_metadata = &init["result"]["capabilities"]["experimental"]["openWhy"];
     assert_eq!(init_metadata["contract"], "open-why.current-rationale/v1");
@@ -188,6 +189,7 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
             "open-why_search",
             "open-why_get",
             "open-why_history",
+            "open-why_commit_links",
             "open-why_link",
             "open-why_feedback",
         ]
@@ -216,6 +218,10 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
         (
             "open-why_link",
             json!({"commit":"fedcba9876543210","decision":"history-e","scope":"scope-a"}),
+        ),
+        (
+            "open-why_commit_links",
+            json!({"commit":"fedcba9876543210","scope":"scope-a","limit":20}),
         ),
         (
             "open-why_feedback",
@@ -319,7 +325,42 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
         .remove("as_of");
     assert_eq!(first_history_without_clock, repeat_history_without_clock);
 
-    let get = &payloads[8].1;
+    let commit_links = &payloads[7].1;
+    assert_eq!(commit_links["contract"], "open-why.commit-links/v1");
+    assert_eq!(commit_links["status"], "ok");
+    assert_eq!(commit_links["scope"], "scope-a");
+    assert_eq!(commit_links["commit"], "fedcba9876543210");
+    assert_eq!(commit_links["items"][0]["record_id"], "history-e");
+    assert_eq!(commit_links["items"][0]["commit_subject"], "");
+    assert_eq!(commit_links["next_cursor"], Value::Null);
+    assert!(commit_links.get("content").is_none());
+
+    let commit_links_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "open-why_commit_links")
+        .unwrap();
+    assert_eq!(
+        commit_links_tool["inputSchema"]["required"],
+        json!(["scope", "commit"])
+    );
+    assert_eq!(
+        commit_links_tool["inputSchema"]["properties"]["limit"]["maximum"],
+        20
+    );
+    assert_eq!(
+        commit_links_tool["inputSchema"]["additionalProperties"],
+        false
+    );
+
+    let (historical_link, historical_link_error) = server.call(
+        39,
+        "open-why_commit_links",
+        json!({"commit":"commit-history-a","scope":"scope-a"}),
+    );
+    assert!(!historical_link_error);
+    assert_eq!(historical_link["items"][0]["record_id"], "history-a");
+
+    let get = &payloads[9].1;
     assert_eq!(get["contract"], "open-why.current-rationale/v1");
     assert_eq!(get["requested_id"], "history-a");
     assert_eq!(get["current_id"], "history-e");
