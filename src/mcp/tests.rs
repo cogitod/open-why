@@ -110,7 +110,13 @@ fn malformed_json_and_invalid_arguments_are_protocol_or_tool_errors() {
     let store = temp_store();
     let input = b"{bad json}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"open-why_get\",\"arguments\":{}}}\n";
     let mut output = Vec::new();
-    serve_io(&store, &input[..], &mut output, || 1_700_000_000).unwrap();
+    serve_io(
+        &std::sync::Mutex::new(store),
+        &input[..],
+        &mut output,
+        || 1_700_000_000,
+    )
+    .unwrap();
     let lines: Vec<Value> = String::from_utf8(output)
         .unwrap()
         .lines()
@@ -163,11 +169,16 @@ fn server_clock_is_evaluated_for_each_request() {
     let input = format!("{}\n{}\n", request(1), request(2));
     let now = std::cell::Cell::new(1_700_000_000_i64);
     let mut output = Vec::new();
-    serve_io(&store, input.as_bytes(), &mut output, || {
-        let instant = now.get();
-        now.set(instant + 60);
-        instant
-    })
+    serve_io(
+        &std::sync::Mutex::new(store),
+        input.as_bytes(),
+        &mut output,
+        || {
+            let instant = now.get();
+            now.set(instant + 60);
+            instant
+        },
+    )
     .unwrap();
 
     let payloads: Vec<Value> = String::from_utf8(output)
