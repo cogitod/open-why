@@ -158,7 +158,7 @@ fn exact_id_contract_catalog_callability_and_fresh_process_digest() {
 
     let mut server = Server::spawn(&db_path);
     let (digest, tools_json) = initialize(&mut server, 1);
-    assert_eq!(digest, "b37082e4965e9009");
+    assert_eq!(digest, "c8e490fedb5ea771");
     let tools: Vec<Value> = serde_json::from_str(&tools_json).unwrap();
     let names: Vec<&str> = tools
         .iter()

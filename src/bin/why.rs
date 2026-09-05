@@ -117,6 +117,9 @@ enum Command {
     },
     /// Run as an MCP stdio server
     Serve {},
+    /// Run a long-lived MCP server shared by every `why serve` on this machine (for a
+    /// supervisor like launchd; plain `serve` connects to it automatically when present)
+    ServeDaemon {},
 }
 
 fn main() -> Result<()> {
@@ -330,6 +333,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             Command::Serve {} => mcp::serve(),
+            Command::ServeDaemon {} => mcp::serve_daemon(),
         },
     }
 }
