@@ -1,0 +1,21 @@
+{
+  "contract": "open-why.integration/v1",
+  "integration_id": "dev.example.rust-host",
+  "integration_version": "1.0.0",
+  "mode": "rust-library",
+  "capabilities": ["search", "current", "import", "link"],
+  "scope": { "strategy": "explicit" },
+  "store_identity": {
+    "strategy": "per-installation",
+    "environment": "OPEN_WHY_STORE_INSTANCE_ID"
+  },
+  "rust": {
+    "crate_name": "open-why",
+    "minimum_version": "0.1.0",
+    "contracts": [
+      "open-why.scoped-current-evidence/v1",
+      "open-why.evidence-identity/v1",
+      "open-why.rationale-import/v1"
+    ]
+  }
+}
