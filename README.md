@@ -216,6 +216,13 @@ compatibility API. New scoped integrations should not call it. The MCP server ke
 the existing `open-why_link` schema and success payload, but delegates its write to
 the scoped method.
 
+## Third-party integrations
+
+Developer tools integrate through the MCP stdio server or the Rust library.
+`open-why.integration/v1` provides a machine-readable compatibility manifest and
+an executable conformance check without loading third-party code into the server.
+See [the integration standard](docs/integrations.md).
+
 ## Configuration
 
 | Variable | Effect |

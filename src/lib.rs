@@ -41,6 +41,7 @@
 pub mod answer;
 pub mod db;
 pub mod embed;
+pub mod integration;
 pub mod mcp;
 pub mod miner;
 mod private_store_path;

@@ -40,6 +40,9 @@ They must not copy open-why's storage, ranking, supersession, or evidence logic.
    capture idempotent.
 6. **Feedback.** Helpful and unhelpful verdicts adjust effectiveness within a
    bounded range.
+7. **Integration boundary.** Third-party tools use versioned MCP or Rust library
+   contracts with explicit scope and store identity. open-why never loads vendor
+   plugins or adopts vendor task, session, or orchestration concepts.
 
 ## Release path
 
@@ -48,6 +51,8 @@ They must not copy open-why's storage, ranking, supersession, or evidence logic.
 - Publish ranking changes only with regression evidence.
 - Add library operations only when they strengthen the focused rationale contract.
 - Keep downstream integration guidance generic and client-neutral.
+- Keep the integration manifest, examples, and executable conformance checks in
+  lockstep with the versioned contracts they declare.
 
 ## Non-goals
 

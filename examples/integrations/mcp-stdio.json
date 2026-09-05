@@ -1,0 +1,23 @@
+{
+  "contract": "open-why.integration/v1",
+  "integration_id": "dev.example.coding-agent",
+  "integration_version": "1.0.0",
+  "mode": "mcp-stdio",
+  "capabilities": ["ask", "search", "current", "history", "commit-links"],
+  "scope": { "strategy": "explicit" },
+  "store_identity": {
+    "strategy": "per-installation",
+    "environment": "OPEN_WHY_STORE_INSTANCE_ID"
+  },
+  "mcp": {
+    "command": "../../target/debug/why",
+    "args": ["serve"],
+    "protocol_version": "2024-11-05",
+    "contracts": [
+      "open-why.current-rationale/v1",
+      "open-why.rationale-history/v1",
+      "open-why.commit-links/v1",
+      "open-why.rationale-import/v1"
+    ]
+  }
+}

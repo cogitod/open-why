@@ -126,5 +126,12 @@ The `why` binary provides bare questions plus `init`, `capture`, `search`, `get`
 exposes the storage and retrieval types as a Rust library. `why serve` presents the
 same store through MCP over standard input and output.
 
+Third-party integrations declare their consumption through
+`open-why.integration/v1`. The manifest supports MCP stdio clients and Rust
+library hosts, binds them to explicit scope and provider-minted store identity,
+and names the versioned contracts they require. The conformance executable can
+probe MCP declarations. It never discovers manifests or loads third-party code
+inside the server.
+
 See [retrieval parity](retrieval-parity.md) for the optional local harness used to
 compare ranking behavior against a caller-supplied fixture.
