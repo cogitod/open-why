@@ -47,6 +47,25 @@ Manifest files are untrusted input. Probing launches the declared command and
 must be an explicit human or CI action; open-why never discovers or executes
 manifests automatically.
 
+### Conformance output
+
+`why-integration-check` writes one `open-why.integration-conformance/v1` JSON
+object to standard output. A successful validation (and probe, when requested)
+exits 0:
+
+```json
+{"contract":"open-why.integration-conformance/v1","status":"ok","integration_id":"dev.example.coding-agent","integration_version":"1.0.0","mode":"mcp-stdio","probed":false}
+```
+
+Validation and probe errors exit nonzero and use the same envelope:
+
+```json
+{"contract":"open-why.integration-conformance/v1","status":"error","message":"parse manifest: expected value at line 1 column 1"}
+```
+
+Consumers may display `message` for diagnostics, but must not parse or depend on
+its human-readable text; that text is not a stable interface.
+
 ## Compatibility
 
 Additive capabilities and new versioned contracts do not invalidate an existing
