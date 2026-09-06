@@ -48,3 +48,20 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Install minimum supported Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Format (Rust 1.88)
+        run: cargo fmt --check
+
+      - name: Build (Rust 1.88 release)
+        run: cargo build --release
+
+      - name: Clippy (Rust 1.88)
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: Test (Rust 1.88)
+        run: cargo test
