@@ -59,9 +59,8 @@ fn main() -> Result<()> {
     let semantic = std::env::var("OPEN_WHY_EMBED_MODEL_PATH").is_ok()
         || std::env::var("OPEN_WHY_EMBED_URL").is_ok();
     println!(
-        "golden parity: {} queries (scope `{}`)",
+        "golden parity: {} queries (scope `{scope}`)",
         fixture.queries.len(),
-        scope
     );
     println!("reference captured: {}", fixture.captured_at);
     println!(
@@ -104,7 +103,7 @@ fn main() -> Result<()> {
         println!();
     }
 
-    println!("== {} pass, {} fail ==", pass, fail);
+    println!("== {pass} pass, {fail} fail ==");
     if fail > 0 {
         std::process::exit(1);
     }

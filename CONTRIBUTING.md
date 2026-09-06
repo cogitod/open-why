@@ -5,6 +5,10 @@ scoped and cite what you're changing and why.
 
 ## Local setup
 
+The minimum supported Rust version is 1.88, declared by `package.rust-version`
+in `Cargo.toml`. CI validates both that exact floor and the current stable
+toolchain.
+
 ```bash
 git clone https://github.com/cogitod/open-why.git
 cd open-why
