@@ -9,9 +9,9 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String> {
         .arg(repo)
         .args(args)
         .output()
-        .with_context(|| format!("git {:?} failed to run", args))?;
+        .with_context(|| format!("git {args:?} failed to run"))?;
     if !out.status.success() {
-        bail!("git {:?} exited {}", args, out.status);
+        bail!("git {args:?} exited {}", out.status);
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
