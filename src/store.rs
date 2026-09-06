@@ -517,3 +517,13 @@ pub struct ExternalDecision {
     #[serde(default)]
     pub git_refs: Vec<GitRef>,
 }
+
+/// One exact temporal transition observed by an external source after a prior
+/// immutable record import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalSupersession {
+    pub predecessor_id: String,
+    pub successor_id: String,
+    pub scope: String,
+    pub valid_until: String,
+}
