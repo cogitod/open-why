@@ -2,11 +2,11 @@ use crate::embed::Embedder;
 use crate::store::{
     CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
     CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,
-    EvidenceIdentityResolution, ExternalDecision, GitRef, RationaleHistoryErrorCode,
-    RationaleHistoryRecord, RationaleHistoryResolution, Record, RecordIdentityConflict,
-    ScopedCommitLinkErrorCode, ScopedCommitLinkOutcome, ScopedCommitLinkResolution,
-    ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution, StoreCompatibility,
-    StoreCompatibilityErrorCode, StoreIdentity, StoreIdentityBindingError,
+    EvidenceIdentityResolution, ExternalDecision, ExternalSupersession, GitRef,
+    RationaleHistoryErrorCode, RationaleHistoryRecord, RationaleHistoryResolution, Record,
+    RecordIdentityConflict, ScopedCommitLinkErrorCode, ScopedCommitLinkOutcome,
+    ScopedCommitLinkResolution, ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution,
+    StoreCompatibility, StoreCompatibilityErrorCode, StoreIdentity, StoreIdentityBindingError,
     StoreIdentityBindingErrorCode, SupersessionConflict, SupersessionCycle,
     SupersessionTargetNotFound, COMMIT_LINKS_CONTRACT, CURRENT_RATIONALE_CONTRACT,
     EVIDENCE_IDENTITY_CONTRACT, MAX_COMMIT_LINKS_PAGE_RECORDS, MAX_COMMIT_LINKS_PAGE_SOURCE_BYTES,
@@ -30,6 +30,7 @@ mod capture_store;
 mod compatibility;
 mod digest;
 mod evidence;
+mod external_supersession;
 mod lifecycle;
 mod query;
 mod ranking;

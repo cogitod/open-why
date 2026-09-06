@@ -1,11 +1,11 @@
 use open_why::{
     inspect_store, CurrentRecordErrorCode, Decision, EvidenceIdentityResolution, ExternalDecision,
-    GitRef, RecordIdentityConflict, ScopedCurrentEvidenceErrorCode, ScopedCurrentRecordResolution,
-    Store, StoreCompatibility, StoreCompatibilityErrorCode, StoreIdentityBindingError,
-    StoreIdentityBindingErrorCode, SupersessionConflict, SupersessionCycle,
-    SupersessionTargetNotFound, EVIDENCE_IDENTITY_CONTRACT, MAX_SUPERSESSION_CHAIN,
-    MAX_TEMPORAL_VALUE_BYTES, RECORD_DIGEST_CONTRACT, SCOPED_CURRENT_EVIDENCE_CONTRACT,
-    STORE_SCHEMA_FAMILY, STORE_SCHEMA_VERSION,
+    ExternalSupersession, GitRef, RecordIdentityConflict, ScopedCurrentEvidenceErrorCode,
+    ScopedCurrentRecordResolution, Store, StoreCompatibility, StoreCompatibilityErrorCode,
+    StoreIdentityBindingError, StoreIdentityBindingErrorCode, SupersessionConflict,
+    SupersessionCycle, SupersessionTargetNotFound, EVIDENCE_IDENTITY_CONTRACT,
+    MAX_SUPERSESSION_CHAIN, MAX_TEMPORAL_VALUE_BYTES, RECORD_DIGEST_CONTRACT,
+    SCOPED_CURRENT_EVIDENCE_CONTRACT, STORE_SCHEMA_FAMILY, STORE_SCHEMA_VERSION,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -296,6 +296,8 @@ fn assert_canonical_utc(value: &str) {
 
 #[path = "store_identity/evidence_import.rs"]
 mod evidence_import;
+#[path = "store_identity/external_supersession.rs"]
+mod external_supersession;
 #[path = "store_identity/feedback.rs"]
 mod feedback;
 #[path = "store_identity/identity_inspection.rs"]
