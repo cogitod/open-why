@@ -248,6 +248,7 @@ present. Otherwise, search remains lexical-first. `why fetch-model` stores
 ## Project information
 
 - [Design and behavior](docs/design.md)
+- [End-user stability contract](STABILITY.md)
 - [Retrieval parity harness](docs/retrieval-parity.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
