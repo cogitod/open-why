@@ -1,5 +1,7 @@
 pre-commit:
   jobs:
+    - name: ci-pins
+      run: bash scripts/check-ci-pins.sh staged
     - name: rust-loc
       run: bash scripts/check-rust-loc.sh staged
     - name: leak-check

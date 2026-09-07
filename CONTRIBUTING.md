@@ -34,6 +34,8 @@ The checks scan exact staged blobs for leaks and enforce a 999-line maximum for
 tracked Rust files under `src/` and `tests/`. There are no generated-file
 exclusions. Reviewed synthetic UUID fixtures may be listed in
 `hooks/leak-allowlist.txt`; secrets and provenance leaks may not be allowlisted.
+They also reject external GitHub Actions that are not pinned to a full commit
+SHA (and container actions that are not pinned by digest).
 
 ## Before opening a PR
 
@@ -41,12 +43,23 @@ Run the main CI checks locally first:
 
 ```bash
 cargo fmt --check
-cargo check
-cargo clippy --all-targets -- -D warnings
-cargo clippy --release --all-targets -- -D warnings
-cargo test
+cargo metadata --locked --format-version 1 --no-deps > /dev/null
+cargo check --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --release --all-targets --locked -- -D warnings
+cargo test --locked
+cargo deny --all-features check advisories licenses sources
+bash scripts/check-ci-pins.sh tracked
 bash scripts/check-rust-loc.sh tracked
 ```
+
+The dependency command requires cargo-deny 0.20.2. CI runs that pinned version
+against the committed lockfile and fails on known
+vulnerabilities, yanked packages, unapproved licenses, and unapproved dependency
+sources. Supply-chain exceptions are not accepted silently: scope an exception
+to the exact advisory or package version, give the reason and removal date in
+`deny.toml`, and link the public review issue. An expired or unreviewed exception
+blocks a stable release even if ordinary CI passes.
 
 If your change touches ranking (`src/db.rs`, `src/relevance.rs`) and you have your own
 golden fixture (see [docs/retrieval-parity.md](docs/retrieval-parity.md); none
