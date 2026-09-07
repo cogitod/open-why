@@ -7,8 +7,9 @@ Fixes #
 
 ## Testing
 - [ ] `cargo fmt --check`
-- [ ] `cargo clippy --release --all-targets -- -D warnings`
-- [ ] `cargo test`
+- [ ] `cargo clippy --release --all-targets --locked -- -D warnings`
+- [ ] `cargo test --locked`
+- [ ] dependency policy and immutable CI-reference checks pass
 - [ ] `bash hooks/check-leaks.sh staged`
 - [ ] If ranking changed (`src/db.rs`, `src/relevance.rs`): ran `why-golden` and noted the pass count below
 
