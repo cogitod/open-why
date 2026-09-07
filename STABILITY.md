@@ -69,12 +69,14 @@ one transaction. A failed migration must leave no partially accepted schema.
 Opening with a different store identity, or reading sealed evidence from another
 store, scope, record, or digest, fails before the requested mutation.
 
-SQLite supplies crash recovery for committed transactions, but open-why does not
-yet have automated process-kill or power-loss fault injection. Therefore no
-stable release may claim verified interruption/restart durability until that gate
-is present. Likewise, open-why currently detects several corrupt or incompatible
-schema states and refuses them, but does not promise repair of arbitrary database
-corruption.
+Automated child-process fault injection verifies two process-abort boundaries:
+a completed capture and its sealed evidence survive reopening, and an interrupted
+multi-column transaction leaves no partial mutation. The test uses an explicit
+parent/child handshake and signal termination without timing sleeps or network
+access. This is process-abort evidence only; open-why does not yet have power-loss
+or filesystem-loss fault injection. Likewise, open-why currently detects several
+corrupt or incompatible schema states and refuses them, but does not promise
+repair of arbitrary database corruption.
 
 Users remain responsible for backups. A usable backup must capture a consistent
 SQLite snapshot (including committed WAL state); copying only the main file while
@@ -142,7 +144,7 @@ checks or explicitly removed from the promised support set.
 | MCP contracts | schemas, bounds, typed errors, exact reads, and stdio smoke tests pass | Yes on Ubuntu |
 | Integration conformance | schema/examples and MCP probe pass automatically | Yes, exercised by `cargo test` on Ubuntu |
 | Store compatibility | fresh, recognized legacy, newer, partial, corrupt, identity, and migration cases pass | Yes for covered fixtures on Ubuntu |
-| Durability | idempotency, atomicity, supersession, migration, restart, and interruption tests pass | Logical cases pass; kill/power-loss injection is unmet |
+| Durability | idempotency, atomicity, supersession, migration, restart, and interruption tests pass | Logical cases and deterministic process-abort recovery pass on Ubuntu; power/filesystem-loss injection is unmet |
 | Backup/restore | documented consistent backup and restore round-trip pass | Unmet |
 | Privacy/leaks | tracked and staged-authority leak tests pass | Yes on Ubuntu |
 | Repository hardening | Rust size control and its tests pass | Yes on Ubuntu |
