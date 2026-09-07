@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod backup;
 mod capture_store;
 mod compatibility;
 mod digest;

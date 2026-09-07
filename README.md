@@ -195,6 +195,31 @@ reporting a potentially stale main-file view. Initial binding requires a
 provider-minted identity of 1 to 128 ASCII letters, digits, `.`, `_`, `:`, or `-`;
 a later explicit mismatch fails with a typed identity error.
 
+Create a consistent backup while the source store remains open, then restore by
+opening the snapshot as a normal bound store:
+
+```rust
+use open_why::Store;
+use std::path::Path;
+
+fn main() -> anyhow::Result<()> {
+    let source = Store::open(Path::new("/path/to/open-why.db"))?;
+    source.backup_to(Path::new("/path/to/new-backup.db"))?;
+
+    let restored = Store::open(Path::new("/path/to/new-backup.db"))?;
+    assert_eq!(source.store_identity()?, restored.store_identity()?);
+    Ok(())
+}
+```
+
+`Store::backup_to` uses SQLite's online-backup mechanism, so the snapshot
+includes committed WAL state. The destination must not already exist; on Unix,
+new directories are private and the database is created with mode `0600`.
+Failure removes the newly created destination rather than leaving a partial
+database that appears restorable. Restore means opening the snapshot through
+`Store`; retaining and protecting backup files against external filesystem or
+media loss remains the operator's responsibility.
+
 `Store::get_current_evidence_in_scope` resolves Current at the Store clock in one
 snapshot and returns `open-why.scoped-current-evidence/v1`, including a verified
 sealed evidence identity. Git links, supersession state, feedback, and retrieval

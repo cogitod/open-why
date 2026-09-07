@@ -70,7 +70,7 @@ impl PreparedStorePath {
         Ok(connection)
     }
 
-    fn verify_connection_target(&self, connection: &rusqlite::Connection) -> Result<()> {
+    pub(crate) fn verify_connection_target(&self, connection: &rusqlite::Connection) -> Result<()> {
         self.verify_path_target()?;
         verify_connection_has_not_moved(connection)?;
         self.verify_path_target()?;
@@ -80,6 +80,31 @@ impl PreparedStorePath {
 
     pub(crate) fn into_parent_guard(self) -> Option<File> {
         self.parent_guard
+    }
+
+    pub(crate) fn remove_created_file(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use anyhow::Context;
+            use rustix::fs::{unlinkat, AtFlags};
+
+            let parent = self
+                .parent_guard
+                .as_ref()
+                .context("created store path has no guarded parent")?;
+            let file_name = self
+                .sqlite_path
+                .file_name()
+                .context("created store path has no file name")?;
+            unlinkat(parent, file_name, AtFlags::empty())?;
+            Ok(())
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::remove_file(&self.sqlite_path)?;
+            Ok(())
+        }
     }
 }
 
@@ -119,10 +144,30 @@ pub(crate) fn prepare(
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+pub(crate) fn prepare_new(path: &Path) -> Result<PreparedStorePath> {
+    prepare_with_hook_mode(path, true, true, false, || {})?
+        .context("new store path was not prepared")
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
 fn prepare_with_hook<F>(
     path: &Path,
     create: bool,
     writable: bool,
+    before_file_open: F,
+) -> Result<Option<PreparedStorePath>>
+where
+    F: FnOnce(),
+{
+    prepare_with_hook_mode(path, create, writable, true, before_file_open)
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+fn prepare_with_hook_mode<F>(
+    path: &Path,
+    create: bool,
+    writable: bool,
+    allow_existing: bool,
     before_file_open: F,
 ) -> Result<Option<PreparedStorePath>>
 where
@@ -190,7 +235,10 @@ where
                 fchmod(&fd, Mode::RUSR | Mode::WUSR)?;
                 fd
             }
-            Err(Errno::EXIST) => open_existing().context("open existing store database")?,
+            Err(Errno::EXIST) if allow_existing => {
+                open_existing().context("open existing store database")?
+            }
+            Err(Errno::EXIST) => anyhow::bail!("store path already exists"),
             Err(error) => return Err(error).context("create new store database"),
         }
     } else {
@@ -219,6 +267,14 @@ pub(crate) fn prepare(
     _create: bool,
     _writable: bool,
 ) -> Result<Option<PreparedStorePath>> {
+    anyhow::bail!("secure new-store paths are unsupported on this Unix target")
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_vendor = "apple", target_os = "linux", target_os = "android"))
+))]
+pub(crate) fn prepare_new(_path: &Path) -> Result<PreparedStorePath> {
     anyhow::bail!("secure new-store paths are unsupported on this Unix target")
 }
 
@@ -261,6 +317,26 @@ pub(crate) fn prepare(
         sqlite_path: path.to_path_buf(),
         parent_guard: None,
     }))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn prepare_new(path: &Path) -> Result<PreparedStorePath> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    drop(file);
+    Ok(PreparedStorePath {
+        sqlite_path: path.to_path_buf(),
+        parent_guard: None,
+    })
 }
 
 #[cfg(all(

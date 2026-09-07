@@ -1,3 +1,4 @@
+mod backup;
 mod capture;
 mod commit_links;
 mod current;
