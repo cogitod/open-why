@@ -294,6 +294,8 @@ fn assert_canonical_utc(value: &str) {
         .all(|(_, byte)| byte.is_ascii_digit()));
 }
 
+#[path = "store_identity/abrupt_process.rs"]
+mod abrupt_process;
 #[path = "store_identity/evidence_import.rs"]
 mod evidence_import;
 #[path = "store_identity/external_supersession.rs"]
