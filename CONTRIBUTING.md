@@ -73,6 +73,16 @@ The branch policy requires zero approving reviews because open-why currently has
 maintainer, who cannot approve their own PR. This avoids an impossible approval gate; it
 does not claim independent review.
 
+## Stable releases
+
+Do not describe a version as stable merely because the normal required checks pass.
+The [end-user stability contract](STABILITY.md) is the release gate: every required
+evidence row must pass at the exact release revision, and every guarantee must be
+backed by continuous automation on each claimed platform. An unmet, skipped, or
+manual-only gate must remain documented as unmet and blocks a stable-version claim.
+Stable release notes must record the supported operating systems, MSRV, contract
+versions, store migration range, and evidence run.
+
 ## Reporting a security issue
 
 Do not open a public issue. See [SECURITY.md](SECURITY.md).
