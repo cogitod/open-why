@@ -78,12 +78,17 @@ or filesystem-loss fault injection. Likewise, open-why currently detects several
 corrupt or incompatible schema states and refuses them, but does not promise
 repair of arbitrary database corruption.
 
-Users remain responsible for backups. A usable backup must capture a consistent
-SQLite snapshot (including committed WAL state); copying only the main file while
-a writer is active is not a supported backup method. Restore must preserve the
-database's bound store identity. Automated online-backup and restore tests and
-documented, executable backup/restore procedures are unmet gates, so backup and
-restore are not yet stability guarantees.
+Users remain responsible for retaining backups. `Store::backup_to` creates a
+consistent SQLite snapshot while the source remains open, including committed
+WAL state; copying only the main file while a writer is active is not a supported
+backup method. Restore means opening that snapshot through `Store`, which
+preserves and verifies the database's bound store identity and sealed evidence
+identity. The destination must be new, and an unsuccessful operation removes the
+newly created destination. Automated tests exercise the online round trip,
+existing-file refusal, cleanup, symlink boundaries, and private Unix filesystem
+state on Linux and macOS-compatible code paths. External filesystem or media
+loss, backup retention, and arbitrary database repair remain outside the proven
+guarantee.
 
 ## Privacy and network access
 
@@ -145,7 +150,7 @@ checks or explicitly removed from the promised support set.
 | Integration conformance | schema/examples and MCP probe pass automatically | Yes, exercised by `cargo test` on Ubuntu |
 | Store compatibility | fresh, recognized legacy, newer, partial, corrupt, identity, and migration cases pass | Yes for covered fixtures on Ubuntu |
 | Durability | idempotency, atomicity, supersession, migration, restart, and interruption tests pass | Logical cases and deterministic process-abort recovery pass on Ubuntu; power/filesystem-loss injection is unmet |
-| Backup/restore | documented consistent backup and restore round-trip pass | Unmet |
+| Backup/restore | documented consistent backup and restore round-trip pass | Yes on Ubuntu; library snapshot includes committed WAL state and preserves store and sealed evidence identity |
 | Privacy/leaks | tracked and staged-authority leak tests pass | Yes on Ubuntu |
 | Repository hardening | Rust size control and its tests pass | Yes on Ubuntu |
 | Dependency/supply chain | locked dependency audit and artifact provenance policy pass | Unmet |
