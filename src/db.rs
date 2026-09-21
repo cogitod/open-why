@@ -36,6 +36,7 @@ mod lifecycle;
 mod query;
 mod ranking;
 mod records;
+mod rescope;
 mod schema;
 mod time;
 

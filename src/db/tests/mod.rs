@@ -5,4 +5,5 @@ mod current;
 mod foundation;
 mod history;
 mod ranking;
+mod rescope;
 mod support;
