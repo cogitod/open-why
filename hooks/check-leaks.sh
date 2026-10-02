@@ -109,6 +109,12 @@ for f in "${files[@]:-}"; do
   path_exists "$f" || continue
   for pat in "${provenance_patterns[@]}"; do
     hits=$(read_path "$f" | grep -EnIi "$pat" 2>/dev/null || true)
+    # Public brand attribution is authorized in the README, not in implementation files.
+    # Exact full-line matching prevents a permitted identity from hiding extra provenance.
+    # This exception never applies to secret patterns or record-export density above.
+    if [[ "$f" == "README.md" && "$pat" == 'cogi''to' ]]; then
+      hits=$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:An open-source project by \[Cogi''to\]\(https://cogi''to\.cv\)\. Apache-2\.0\.$' || true)
+    fi
     # These exact strings are public publisher identity, not private implementation provenance.
     hits=$(printf '%s\n' "$hits" \
       | grep -vE 'github\.com/cogitod/open-why|github/license/cogitod/open-why|Copyright 2026 Cogito Agency' \

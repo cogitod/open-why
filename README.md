@@ -1,9 +1,27 @@
 # open-why
 
+**Keep the reasons within reach.**
+
+An open-source project by [Cogito](https://cogito.cv). Apache-2.0.
+
+Code records what changed. The reasons are often scattered across commits and
+decision documents. open-why makes that recorded reasoning available to you and
+your AI tools, with sources you can inspect before deciding what still applies.
+
 open-why is a Rust library and local MCP server that lets an LLM ask why code
 decisions were made. It indexes Git history and decision documents, stores
 rationale in SQLite, and returns scoped records with source metadata. A CLI is
 included as a convenience for setup and inspection.
+
+## Why we build this
+
+Our promise is **Make intelligence compound.** We build tools that help
+people carry what they learn into what they do next. open-why expresses that idea
+by preserving the reasons behind decisions and making them available for reuse.
+
+The returned records are evidence to examine. They do not establish that a past
+decision was correct, and missing rationale is not permission to invent an
+explanation. You can use open-why independently of our other products.
 
 ## What the LLM gets
 
