@@ -2,6 +2,26 @@ use super::super::*;
 use super::support::*;
 
 #[test]
+fn sha256_hex_preserves_fixed_width_lowercase_checksums() {
+    for (input, expected) in [
+        (
+            "",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "abc",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            "s",
+            "043a718774c572bd8a25adbeb1bfcd5c0256ae11cecf9f9c3f925d0e52beaf89",
+        ),
+    ] {
+        assert_eq!(sha256_hex(input.as_bytes()), expected);
+    }
+}
+
+#[test]
 fn record_digest_v1_has_stable_null_unicode_and_float_vectors() {
     let base = RecordDigestRow {
         id: "record\0id".to_owned(),

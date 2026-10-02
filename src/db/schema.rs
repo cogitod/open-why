@@ -329,5 +329,14 @@ pub(super) fn append_required(canonical: &mut Vec<u8>, name: &str, value: &[u8])
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    // Persisted identities require two lowercase hex digits per byte, regardless
+    // of the digest crate's output type or formatting implementations.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    hex
 }
