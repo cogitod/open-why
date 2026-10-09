@@ -25,6 +25,7 @@ impl Store {
     /// Returns the number of records moved. Moving a scope to itself, or one that holds no
     /// records, is a no-op that writes nothing, which makes repeated runs safe.
     pub fn rescope(&self, from: &str, to: &str) -> Result<usize> {
+        crate::privacy::check(&(from, to))?;
         anyhow::ensure!(
             !from.is_empty() && !to.is_empty(),
             "rescope requires both a source and a destination scope"

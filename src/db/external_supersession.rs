@@ -6,6 +6,7 @@ impl Store {
     /// Exact replay is a no-op; conflicting or invalid lifecycle state fails
     /// before effect.
     pub fn reconcile_external_supersession(&self, transition: &ExternalSupersession) -> Result<()> {
+        crate::privacy::check(transition)?;
         if transition.predecessor_id == transition.successor_id {
             return Err(SupersessionCycle.into());
         }

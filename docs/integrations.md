@@ -294,3 +294,13 @@ Only local stdio and the local Unix daemon are provided; there is no HTTP/SSE
 server, multi-user authentication service or Windows transport. Scopes are
 explicit retrieval boundaries, not an authorization system for untrusted OS
 users. Keep a store and its socket private to the account running the client.
+
+## Credential rejection
+
+After beta.1, the store rejects recognizable credentials before ingestion or
+embedding, including across a batch. Rust callers can downcast an ingestion
+error to `open_why::SensitiveDataRejected`; MCP returns the existing tool-error
+envelope with code `sensitive_data` for rejected arguments. Remove sensitive
+values upstream before retrying. The store does not rewrite evidence to make
+an import succeed. See [policy and limits](../SECURITY.md#data-ingestion-policy-after-beta1),
+including legacy-data and external-provider responsibilities.

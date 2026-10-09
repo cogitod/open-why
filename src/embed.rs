@@ -59,6 +59,7 @@ impl HttpEmbedder {
 
 impl Embedder for HttpEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        crate::privacy::check_text(text)?;
         let body = serde_json::json!({ "model": self.model, "input": text });
         let mut req = ureq::post(&self.url).header("Content-Type", "application/json");
         if let Some(key) = &self.api_key {

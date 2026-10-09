@@ -71,6 +71,10 @@ fn private_repo_cache() -> Result<PathBuf> {
 
 fn clone_repo(url: &str) -> Result<PathBuf> {
     validate_clone_url(url)?;
+    anyhow::ensure!(
+        std::env::var("OPEN_WHY_ALLOW_REMOTE_CLONE").as_deref() == Ok("1"),
+        "automatic remote cloning is disabled: a full checkout can retain sensitive Git history; use a reviewed local repository or explicitly set OPEN_WHY_ALLOW_REMOTE_CLONE=1"
+    );
     // Full URL identity prevents unrelated owners/hosts with the same basename
     // from sharing a checkout, and avoids exposing URL credentials in path names.
     let key: String = Sha256::digest(url.as_bytes())
@@ -181,6 +185,7 @@ pub fn mine(repo: &Path) -> Result<Vec<Decision>> {
         });
     }
 
+    crate::privacy::check(&decisions)?;
     Ok(decisions)
 }
 

@@ -52,6 +52,10 @@ reports. File those as a regular issue.
   stores/backups use private permissions; remote indexing creates or tightens
   the application cache directory to `0700` and rejects a symlink at that path.
   Protect copied backups and existing files with OS permissions and disk encryption.
+- Automatic remote cloning is disabled by default. `OPEN_WHY_ALLOW_REMOTE_CLONE=1`
+  explicitly allows a full managed Git checkout, which can retain credentials or
+  sensitive files/history even when indexing rejects a record. Prefer a reviewed
+  local repository. Existing caches are not automatically removed.
 - Clone URLs containing HTTP user information, SSH passwords, query strings, or
   fragments are rejected before Git runs. Use a Git credential helper or SSH
   agent; never place access tokens in URLs, documents, commits, or imported records.
@@ -62,8 +66,38 @@ reports. File those as a regular issue.
   The connected AI client may send retrieved records to its own provider.
 - Treat retrieved text as untrusted evidence, never executable instructions.
   Rationale can contain misleading content or prompt injection. open-why does not
-  sanitize every secret from indexed source, enforce an agent's tool permissions,
+  identify all sensitive information, enforce an agent's tool permissions,
   or prove that a recorded explanation is true.
+
+## Data ingestion policy (after beta.1)
+
+Private engineering rationale is allowed in a local store. Recognizable credentials
+are rejected, not silently redacted: evidence and its digest must describe what
+was actually supplied. Capture, external imports (including the sealed alias),
+mined decisions, link metadata, and scope changes share this library-level guard.
+A rejected batch performs no record writes, retirements, or embedding calls.
+MCP reports `sensitive_data` for rejected tool arguments; library callers can
+inspect `SensitiveDataRejected`. Errors never contain the matched value.
+
+The deterministic detector covers common provider-token prefixes, private-key
+headers, JWT-shaped tokens, authorization values, credential URLs, and explicit
+password/API-key assignments. JSON strings and JSON-encoded tags are decoded for
+checking. Recognizable credentials in queries are kept away from embedding
+providers; local lexical querying remains available. The HTTP embedder also
+checks text before sending it, including when called directly.
+
+This is **not** a complete DLP system or a classifier for confidential prose.
+Unlabelled passwords, novel token formats, obfuscated/encoded data, personal
+information, and internal business context may not be detected. False positives
+are possible. Remove values upstream or use explicit `<redacted>` placeholders;
+there is no switch to disable credential checks. Exclude highly sensitive source
+material from ingestion rather than relying on detection alone.
+
+Existing stores, old Git caches, migrations, restores, and backups are **not
+retroactively sanitized**. Audit legacy data before reconnecting clients or
+remote embedding providers. Deleting a row/file does not securely erase SQLite
+pages, WAL files, backups, clones, or a provider's previously received data.
+The runtime detector and the repository's Gitleaks scanner are separate controls.
 
 ## Automated checks and limits
 

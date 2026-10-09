@@ -270,6 +270,7 @@ impl Store {
         commit_hash: &str,
         commit_subject: &str,
     ) -> Result<()> {
+        crate::privacy::check(&(decision_id, commit_hash, commit_subject))?;
         self.conn.execute(
             "INSERT OR IGNORE INTO decision_git_refs (decision_id, commit_hash, commit_subject)
              VALUES (?1,?2,?3)",
@@ -285,6 +286,9 @@ impl Store {
         commit_hash: &str,
         commit_subject: &str,
     ) -> ScopedCommitLinkResolution {
+        if crate::privacy::check(&(evidence_identity, commit_hash, commit_subject)).is_err() {
+            return scoped_commit_link_error(ScopedCommitLinkErrorCode::InvalidRequest, false);
+        }
         if commit_hash.is_empty()
             || commit_hash.len() > MAX_COMMIT_LINK_HASH_BYTES
             || commit_subject.len() > MAX_COMMIT_LINK_SUBJECT_BYTES
@@ -431,6 +435,7 @@ impl Store {
 
     /// Bulk-import mined decisions (commits + ADRs) into a scope. Idempotent.
     pub fn import_decisions(&self, scope: &str, decisions: &[Decision]) -> Result<usize> {
+        crate::privacy::check(&(scope, decisions))?;
         let tx = self.conn.unchecked_transaction()?;
         let mut prepared = Vec::with_capacity(decisions.len());
         for decision in decisions {
@@ -535,6 +540,7 @@ impl Store {
     /// bumped so the verdict also moves recency. Returns the new effectiveness, or `None` when the
     /// id is unknown or superseded.
     pub fn feedback(&self, id: &str, helpful: bool) -> Result<Option<f64>> {
+        crate::privacy::check_text(id)?;
         let delta = if helpful { 0.05 } else { -0.03 };
         let now = epoch_to_iso(now_epoch());
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;

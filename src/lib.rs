@@ -44,6 +44,7 @@ pub mod embed;
 pub mod integration;
 pub mod mcp;
 pub mod miner;
+pub mod privacy;
 mod private_store_path;
 pub mod relevance;
 pub mod search;
@@ -54,6 +55,7 @@ pub use db::{default_path, inspect_store, RankExplanation, Store};
 #[cfg(feature = "local-embeddings")]
 pub use embed::LocalEmbedder;
 pub use embed::{cosine, from_env, Embedder, HttpEmbedder};
+pub use privacy::SensitiveDataRejected;
 pub use store::{
     CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
     CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,

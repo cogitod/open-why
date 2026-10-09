@@ -505,3 +505,32 @@ malicious processes, arbitrary-volume indexing, prompt injection defenses in
 consumer agents, and authenticated remote hosting are outside the guarantees
 provided here. No credentials were detected that required revocation, and no
 new release was published as part of this review.
+
+## Credential ingestion boundary — 2026-10-09 (after beta.1)
+
+The published beta.1 CLI accepted a generated, nonfunctional credential marker
+into an isolated temporary store. Repository secret scanning did not protect that
+runtime ingestion path. The new library guard rejects detected credentials before
+capture, batch import, Git mining, metadata writes, or embedding. It retains
+ordinary private rationale; it does not classify arbitrary confidential prose.
+
+`tests/ingestion_privacy.rs` checks library/CLI/MCP rejection, whole-batch refusal,
+unchanged predecessor state, zero provider calls, database/WAL absence of the
+marker, JSON-escaped tags, safe-rationale acceptance, and remote-clone refusal
+before cache creation. Direct HTTP embedding is rejected before transport.
+All fixtures are synthetic and stores are isolated. No real user stores were read
+or rewritten. Remote cloning now requires explicit opt-in because Git objects
+can retain data outside the guarded rationale records.
+
+Local release build and strict release Clippy passed. Default tests: 184 passed,
+0 failed, 3 explicit opt-in/manual skips; lexical tests: 183 passed, 0 failed,
+0 ignored. The first full run caught a false positive on a documented API-key
+ellipsis placeholder; that was fixed and the failing MCP case and full suites
+passed afterward. Measured test execution was 52.12 s versus 51.78 s before the
+change (excluding compilation; a single local observation, not a benchmark).
+Hosted feature/MSRV/model checks remain required before merge.
+
+These checks establish rejection for the documented patterns, not universal
+secret detection or legacy-data sanitization. See the
+[data policy](../SECURITY.md#data-ingestion-policy-after-beta1). The published
+beta.1 binaries do not include this guard.

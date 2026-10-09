@@ -6,6 +6,7 @@ impl Store {
         embedder: Option<Box<dyn Embedder>>,
         store_instance_id: Option<&str>,
     ) -> Result<Store> {
+        crate::privacy::check(&store_instance_id)?;
         let prepared = match crate::private_store_path::prepare(path, false, true)? {
             Some(prepared) => prepared,
             None => {
