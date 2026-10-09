@@ -2,15 +2,16 @@
 
 Issues and focused PRs are welcome. Useful first contributions include a
 reproducible bug, an onboarding improvement, or a regression test for a reported
-problem. See [scoped contributor tasks](docs/contributor-tasks.md) for work requiring no
+problem. See [scoped contributor tasks](docs/roadmap.md#contributor-tasks) for work requiring no
 internal context. For a new capability or contract change, open an issue describing the
 user's problem before investing in a large implementation.
 
 ## Local setup
 
 Install Git, Rust 1.88 or newer, and your platform's native build tools. CI checks
-Linux with both Rust 1.88 and current stable; other platforms are not currently
-covered by the [stability contract](STABILITY.md).
+Linux with both Rust 1.88 and current stable, and macOS with current stable.
+See [beta platform evidence](docs/readiness.md) and the stronger
+[stability contract](STABILITY.md).
 
 Fork the repository on GitHub if you do not have write access, then clone your
 fork and add this repository as `upstream`. Maintainers can clone directly:
