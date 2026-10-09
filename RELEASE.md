@@ -46,6 +46,12 @@ complexity for the first use. Source builds retain the default local-embeddings
 feature. The SBOM describes the lexical Cargo resolution, including build and
 development dependencies; it excludes host OS libraries and optional models.
 
+Linux GNU archives inherit the builder's native runtime requirements. The local
+Ubuntu 24.04 ARM64 candidate requires glibc 2.39; it is not a portable binary for
+older Linux distributions or musl/Alpine. Before publishing each target, record
+`ldd why` and `readelf --version-info why` with its tested OS/architecture.
+Source installation can support environments that a particular archive cannot.
+
 ## Authorized publication process
 
 These steps require maintainer authorization; they are not part of local work.

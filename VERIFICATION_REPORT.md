@@ -2,7 +2,9 @@
 
 Date: 2026-10-09. Baseline: `ac2f19b`. Runtime changes through `273ecb2`.
 Local branch: `feat/trustworthy-public-beta`. Version: `0.1.0-beta.1`.
-No PR, issue, tag, release, remote setting change or hosted artifact was created.
+The maintainer authorized branch publication and hosted CI after local validation.
+[PR #44](https://github.com/cogitod/open-why/pull/44) is open. No issue, tag,
+release or remote setting change was made; candidate assets remain local.
 
 ## Recommendation
 
@@ -163,7 +165,7 @@ reported source commit, host and toolchain are in each candidate's build JSON.
 | Backup | `why backup --to <candidate>/snapshot.db` | New consistent snapshot; source remains available |
 | Verify | `why verify-backup <candidate>/snapshot.db` | Schema, integrity, foreign keys and sealed evidence pass |
 | Restore | `why restore <candidate>/snapshot.db --to <candidate>/restored.db`; `why get release-smoke` against restored store | Same store identity and synthetic record content preserved |
-| Contribute | Topic commits, staged hooks, shell regressions and Rust matrix | Checks execute locally; public issue/PR creation not authorized |
+| Contribute | Topic commits, staged hooks, shell regressions and Rust matrix | Local checks pass; PR #44 opened with authorization; issues remain drafts |
 | Pass CI | Local CI-equivalent commands and actionlint | Local checks pass; hosted workflow execution remains pending |
 | Install public versioned release | RELEASE.md commands and local archive | Local immutable candidate works; no public beta tag/download exists yet |
 
@@ -188,6 +190,37 @@ LICENSE and README. `otool -L` reported only system `libiconv` and `libSystem`
 dynamic dependencies. The extracted binary completed the full scripted journey;
 no real user store was opened. Public provenance remains unverified until the
 hosted attestation workflow executes on an authorized tag.
+
+## Additional Linux packaged-artifact validation
+
+A clean local clone at `495acafde1ac183c2ce3f658ce518c74fbc5c84e` was copied
+into the Ubuntu 24.04 ARM64 container described above. Rust/Cargo 1.88.0 ran:
+
+```bash
+python3 scripts/prepare-release.py /output/candidate
+cd /output/candidate/assets
+sha256sum -c SHA256SUMS-aarch64-unknown-linux-gnu
+ldd ../unpacked-binary/why
+readelf --version-info ../unpacked-binary/why
+```
+
+The packaged source installed, and the extracted Linux binary passed every
+scripted journey assertion. All four checksum entries matched. The binary links
+system libc, libm and libgcc_s; its symbol requirements include `GLIBC_2.39`.
+This archive is validated on Ubuntu 24.04 ARM64, not older glibc systems. The
+Debian lexical source-build result does not certify this prebuilt archive there.
+
+| Asset | SHA-256 |
+|---|---|
+| open-why-0.1.0-beta.1.crate | 5fdbf721820343be8cb153069a4c6b575e5d7139fedae5ff06b92f43b6e5a60a |
+| open-why-0.1.0-beta.1-aarch64-unknown-linux-gnu-lexical.tar.gz | 54d74bb0e0ba26f277b3bf12086212131d42be3143def6ef1a4187a8ac54ab2c |
+| build-aarch64-unknown-linux-gnu.json | 794d4e199298464dc590921aa74b26cdd5e0fc8a9a6ffcdffe8d87ebbaab8c23 |
+| sbom-aarch64-unknown-linux-gnu.cdx.json | f1c9b508fed19abb9da8c4e188f980bc3661917be43a563c7bce28f67e7ad24b |
+
+The source hash differs from the earlier macOS candidate because it includes the
+later verification-report commit. These are separate local validation candidates,
+not a release bundle; final platform builders must use one identical revision.
+The hosted Linux runner uses x86-64, which this ARM64 container does not certify.
 
 ## Failures observed and handled
 
@@ -221,9 +254,10 @@ hosted attestation workflow executes on an authorized tag.
 - **Implemented but not hosted:** macOS/Linux GitHub workflow matrix, tag/main
   ancestry gate, artifact attestation and upload. Static validation/local runs
   cannot certify remote runner permissions or hosted provenance.
-- **Authorization gate:** no publishing PRs, issues, tags, releases or remote
-  setting changes. Actual public immutable-download verification cannot run
-  until publication is authorized. Existing protections were read, not changed.
+- **Authorization gate:** PR #44 and hosted CI are authorized. Tags, releases,
+  public issues and remote setting changes remain outside this continuation.
+  Public immutable-download verification awaits an authorized release. Existing
+  protections were read, not changed.
 - **Independent acceptance:** no actual Codex/Claude application version or
   outside human has been certified. The custom process harness tests MCP
   `2024-11-05` and generated config shapes only.

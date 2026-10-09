@@ -27,8 +27,8 @@ that a checked box establishes independent adoption.
 
 | Priority | Work | Acceptance | Dependency / owner |
 |---|---|---|---|
-| P0 release gate | Review and run hosted checks on the exact proposed commit | Both required checks pass, macOS and real model stages execute; isolation regressions pass; conversations resolved | Explicit authorization to publish a PR; maintainer review |
-| P1 | Verify native distribution targets | Linux/macOS candidate archives are installed and exercised on their declared architecture; no unsupported platform claims | Hosted candidate workflow or additional authorized target hardware |
+| P0 release gate | Review and run hosted checks on the exact proposed commit | Both required checks pass, macOS and real model stages execute; isolation regressions pass; conversations resolved | PR #44 authorized and open; hosted CI and maintainer review |
+| P1 | Verify native distribution targets | Linux/macOS candidate archives are installed and exercised on their declared architecture; no unsupported platform claims | Local macOS/Ubuntu ARM64 archives pass; hosted x86-64/provenance pending |
 | P1 | Independent first use | Outside developer records version/checksum, OS and actual MCP client/version; completes discover → install → evidence → evaluate → backup/restore → tested contribution | Reviewed candidate and an independent participant |
 | P1 | Authorize version tag and candidate workflow | Tag/version match reviewed main history; final assets pass validation and GitHub provenance verification | Explicit maintainer authorization; no local substitute for hosted attestations |
 | P1 | Publish and verify downloads | Immutable public install and checksum/provenance checks succeed from public URLs | Explicit release authorization; all previous gates |

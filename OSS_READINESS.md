@@ -28,4 +28,7 @@ stable-release contract in STABILITY.md.
 release yet.** No unresolved critical isolation defect was observed in the
 executed tests. Public release still requires the reviewed commit's hosted checks,
 validated/attested published artifacts, and recorded external-client acceptance.
-No remote settings, PRs, issues, tags or releases were created by this work.
+[PR #44](https://github.com/cogitod/open-why/pull/44) was opened with maintainer
+authorization after local verification. No remote settings, issues, tags or
+releases were created. Linux ARM64 packaged-artifact validation also passed;
+that Ubuntu 24.04 binary requires glibc 2.39 (see the report).
