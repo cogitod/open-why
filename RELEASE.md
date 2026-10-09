@@ -1,8 +1,9 @@
 # Beta releases and upgrades
 
-`0.1.0-beta.1` is a local release candidate, not a published release. There is no
-beta tag to install yet. Public beta is a usability milestone; it does not imply
-the stable guarantees in STABILITY.md.
+[`v0.1.0-beta.1`](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1)
+is a published prerelease. Its signed tag identifies reviewed commit
+`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`. Public beta is a usability milestone;
+it does not imply the stable guarantees in STABILITY.md.
 
 ## Version policy
 
@@ -46,11 +47,12 @@ complexity for the first use. Source builds retain the default local-embeddings
 feature. The SBOM describes the lexical Cargo resolution, including build and
 development dependencies; it excludes host OS libraries and optional models.
 
-Linux GNU archives inherit the builder's native runtime requirements. The local
-Ubuntu 24.04 ARM64 candidate requires glibc 2.39; it is not a portable binary for
-older Linux distributions or musl/Alpine. Before publishing each target, record
-`ldd why` and `readelf --version-info why` with its tested OS/architecture.
-Source installation can support environments that a particular archive cannot.
+Published lexical archives target Apple Silicon (tested on macOS 14) and Linux
+x86-64 (tested on Ubuntu 24.04). The Linux archive requires **glibc 2.39**, libm
+and libgcc_s, verified with `ldd` and `readelf --version-info`. It fails to start
+on Ubuntu 22.04 and does not target musl/Alpine. Use source installation on older
+GNU/Linux systems. Before publishing a new target, record its native runtime
+requirements and test the actual archive; a target triple alone is insufficient.
 
 ## Authorized publication process
 
@@ -77,12 +79,15 @@ These steps require maintainer authorization; they are not part of local work.
 6. Test the public download URLs and clean installation after publishing; record
    those results. Until then the public-distribution acceptance gate remains open.
 
-Example verification after downloading an asset from an authorized release:
+Download the platform manifest and all files it references into one directory.
+The source `.crate` is shared by both platforms. Example for Apple Silicon:
 
 ```bash
 shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin
 gh attestation verify open-why-0.1.0-beta.1-aarch64-apple-darwin-lexical.tar.gz \
   --repo cogitod/open-why \
+  --source-digest ffb32f6a9a9187df69ee812ea9a38a1014e4aea6 \
+  --source-ref refs/tags/v0.1.0-beta.1 --deny-self-hosted-runners \
   --signer-workflow cogitod/open-why/.github/workflows/release-candidate.yml
 ```
 
@@ -92,8 +97,8 @@ Local unsigned candidates have no GitHub attestation and must be labeled as such
 
 ## Immutable installation
 
-Before publication, use a supplied reviewed checkout or the locally generated
-source archive. The archive contains its Cargo.lock and `.cargo_vcs_info.json`.
+A source archive contains its Cargo.lock and `.cargo_vcs_info.json`. Verify its
+checksum and provenance before extracting and installing:
 
 ```bash
 tar -xzf open-why-0.1.0-beta.1.crate
@@ -101,7 +106,7 @@ cargo install --locked --path open-why-0.1.0-beta.1 --bin why --no-default-featu
 why --version
 ```
 
-After the authorized tag exists publicly:
+Install the published source tag:
 
 ```bash
 cargo install --locked --git https://github.com/cogitod/open-why \

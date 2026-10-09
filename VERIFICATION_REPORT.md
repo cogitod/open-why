@@ -1,20 +1,23 @@
 # Public-beta verification report
 
-Date: 2026-10-09. Baseline: `ac2f19b`. Runtime changes through `273ecb2`.
-Local branch: `feat/trustworthy-public-beta`. Version: `0.1.0-beta.1`.
-The maintainer authorized branch publication and hosted CI after local validation.
-[PR #44](https://github.com/cogitod/open-why/pull/44) merged as `1f97e04`. No issue, tag,
-release or remote setting change was made; candidate assets remain local.
+Date: 2026-10-09. Baseline: `ac2f19b`. Reviewed runtime:
+`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`, signed tag `v0.1.0-beta.1`.
+[PR #44](https://github.com/cogitod/open-why/pull/44) established the beta;
+[PR #45](https://github.com/cogitod/open-why/pull/45) fixed follow-up regressions;
+[PR #46](https://github.com/cogitod/open-why/pull/46) added README illustrations.
+All merged through required checks. The tag intentionally freezes PR #45's
+validated runtime; later documentation changes do not change its bytes.
 
 ## Recommendation
 
-**NO-GO for public release; GO for PR review and supervised beta evaluation.**
-The reproduced store-isolation defects are fixed, and local product/artifact
-journeys are exercised, and the initial PR revision passed hosted CI. Every new
-PR revision still requires its own checks. Remaining publication gates include
-artifact attestations/public download verification and independent real-client
-acceptance. A protocol harness is not evidence that a named vendor client/version
-or an independent developer completed the journey.
+**GO for supervised beta evaluation using the published prerelease; independent
+human first use remains unverified.** The reproduced isolation defects are fixed.
+The tagged source has passed hosted Linux/macOS checks and Rust 1.88 checks. Actual Codex CLI 0.162.0
+completed the bounded evidence-read check described below. Independent human
+first use and broader client acceptance remain unverified. Earlier sections
+retain the environment and outcomes of the initial beta work; later dated
+sections record follow-up checks and failures rather than treating them as
+results from the same revision.
 
 ## Implemented and verified
 
@@ -341,3 +344,112 @@ product failures. No failed setup or skipped test is counted as product success.
 The remaining release gates remain in IMPLEMENTATION_PLAN.md. Schema migration
 and narrow compatibility APIs are retained deliberately; deleting them would
 break existing data or consumers, not improve beta readiness.
+
+## Signed beta candidate and actual Codex client (2026-10-09)
+
+PR #45 merged the diagnostic, remote-refresh and integration-manifest fixes as
+`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`. Its main CI passed
+[run 37909312971](https://github.com/cogitod/open-why/actions/runs/37909312971).
+The maintainer authorized release preparation, and `v0.1.0-beta.1` was signed
+with the existing SSH agent key. Local signature verification passed before the
+tag was pushed. Hosted candidate validation is
+[run 37972316016](https://github.com/cogitod/open-why/actions/runs/37972316016).
+The publication and final-byte verification results follow below.
+
+Actual client: `codex-cli 0.162.0`, macOS ARM64, lexical `why` installed with the
+locked Cargo dependency graph from exact revision `ffb32f6`. The public
+`examples/quickstart.sh <new-demo-directory> codex` created a new synthetic Git
+repository and store. The generated command, args, database path and persisted
+identity were passed as per-run Codex overrides. User configuration was not
+changed. The run used `codex exec --ignore-user-config --ephemeral --sandbox
+read-only --disable multi_agent --disable plugins --disable shell_tool --json`;
+only `open-why_ask` and `open-why_get` were enabled and approved for this demo.
+
+- Initial attempt: MCP startup succeeded, but calls were refused because tool
+  approval was required and the non-interactive run could not prompt. Exit code
+  zero alone did **not** count as acceptance.
+- Authorized retry: three MCP calls completed without errors (`ask`, `get`,
+  `ask`). The final SQLite rationale matched the synthetic source, and the cited
+  record/commit matched the demo repository's Git HEAD.
+- Missing evidence: the encryption query returned the SQLite record, which did
+  not establish an encryption choice. The client reported unknown. This does
+  not mean lexical retrieval always returns an empty list for unsupported queries.
+- Limits: client-driven supersession/reconnection, Claude Code, and independent
+  human first use were not exercised. This is one bounded interoperability check,
+  not a general client certification or retrieval-accuracy score.
+
+PR #46 adds generated README illustrations with descriptive alt text and saved
+prompts. They illustrate the product principles and do not represent actual UI
+screenshots or additional correctness evidence.
+
+## Published beta artifacts (2026-10-09)
+
+[Release v0.1.0-beta.1](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1)
+is a prerelease at `ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`. Hosted
+[run 37972316016](https://github.com/cogitod/open-why/actions/runs/37972316016)
+passed all five jobs: leak check, Linux build/test (stable and Rust 1.88),
+macOS tests, Ubuntu 24.04 candidate and macOS 14 candidate. The explicit pinned
+model evaluation ran; ordinary ignored model tests alone were not counted.
+
+Both candidate jobs ran `python3 scripts/prepare-release.py <new-output-dir>`
+with Rust 1.88.0. Each installed the packaged source and exercised the extracted
+lexical archive: version, demo, index, capture, search, MCP initialize, backup,
+verification, restore and exact read. These are native x86-64 Linux and ARM64
+macOS builds. All ten candidate files (including the duplicate source archive)
+passed SHA-256 and GitHub attestation verification. The exact verification
+command in [RELEASE.md](RELEASE.md#authorized-publication-process) was run for
+each asset, enforcing the repository, release workflow, full source revision,
+tag ref and GitHub-hosted runner identity.
+
+The source archives were byte-identical, SHA-256
+`8ad94fc274178cdbb66370db615c569f3fbdff45b87541d27055adc01b100040`.
+One source archive and eight platform-specific assets were published unchanged.
+All nine assets downloaded through public URLs using unauthenticated
+`curl --fail --location`; both checksum manifests passed. An initial request
+while `gh release create` was still uploading received 404 from its temporary
+draft URL. After publication completed, the final URLs succeeded; that initial
+request is not counted as a successful download.
+
+On macOS 26.5.2 ARM64, installation from the public source tag succeeded:
+
+```bash
+cargo install --locked --git https://github.com/cogitod/open-why \
+  --tag v0.1.0-beta.1 --bin why --no-default-features --root <new-install-dir>
+<new-install-dir>/bin/why --version
+```
+
+Cargo recorded source `ffb32f6`; output was `why 0.1.0-beta.1`. Dependencies were
+cached, so this does not claim an empty-cache or offline build. Independently,
+the anonymously downloaded Apple Silicon archive was extracted into a new
+directory. With `OPEN_WHY_BIN` pointing to that executable, the following
+commands passed against a disposable fixture and its generated identity:
+
+```bash
+why --version
+bash examples/quickstart.sh <new-demo-dir> generic
+# Apply OPEN_WHY_DB and OPEN_WHY_STORE_INSTANCE_ID from the generated snippet.
+why init <new-demo-dir>/repository
+why search SQLite --scope <new-demo-dir>/repository
+why capture --id public-release-smoke --title 'Public release smoke' \
+  --content 'Synthetic public download verification'
+why backup --to <new-snapshot-path>
+why verify-backup <new-snapshot-path>
+why restore <new-snapshot-path> --to <new-restored-path>
+# Point OPEN_WHY_DB at the restored path, preserving the generated identity.
+why get public-release-smoke
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | why serve
+```
+
+Assertions checked SQLite retrieval, exact restored content and MCP server
+version. No existing store or user client configuration was modified.
+
+Linux runtime inspection (`ldd why`, `readelf --version-info why`,
+`readelf -d why`) identified glibc 2.39, libm and libgcc_s dependencies. The
+archive failed to start on Ubuntu 22.04 x86-64 with `GLIBC_2.39 not found`; this
+is an unsupported-host result, not a pass. Ubuntu 24.04 candidate execution
+passed in the release workflow. The runtime requirement is explicit in release
+notes, README and RELEASE.md; older GNU/Linux users should build from source.
+
+Remaining acceptance: an independent developer's complete first-use and
+contribution journey; Claude Code and broader real-client coverage. No general
+bug-free, broad retrieval-accuracy, or stable-API claim follows from this release.

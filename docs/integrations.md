@@ -217,11 +217,40 @@ CLI, including direct stdio and shared Unix-daemon paths. Onboarding tests parse
 the generated Codex TOML, Claude Code JSON and generic command/args/env formats
 and launch those commands. They do not launch the actual vendor clients.
 
-No particular Codex or Claude Code application version is certified by this beta
-work. Independent acceptance must record the actual client version, platform,
-release checksum, setup, first evidence read, missing evidence, supersession and
-reconnection results before adding it to a tested-client list. A configuration
-snippet is not evidence of end-to-end client interoperability.
+An actual **Codex CLI 0.162.0** session on **macOS ARM64** was exercised on
+2026-10-09 against the lexical binary installed from reviewed revision
+`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`. Using the isolated quickstart repository,
+it called `open-why_ask`, retrieved the selected record with `open-why_get`, and
+asked the missing-encryption-evidence question. All three calls succeeded; the
+answer cited the correct synthetic Git commit and rationale, and reported the
+encryption choice as unknown. This is a bounded client check, not certification
+of all client features or an independent human usability study. Claude Code,
+client-driven supersession and reconnection still need recorded acceptance.
+
+Non-interactive Codex runs need explicit tool authorization. The initial run
+connected but refused calls because approvals were required and it could not
+prompt. The successful test enabled only the two tools below and approved them
+for the disposable demo store. `open-why_ask` can index an empty scope; it is not
+a read-only operation. Do not apply this policy to an untrusted repository or
+normal store without reviewing that access.
+
+```toml
+# Add alongside the command/args/env printed by `why setup` for the demo.
+[mcp_servers.open-why]
+enabled_tools = ["open-why_ask", "open-why_get"]
+
+[mcp_servers.open-why.tools.open-why_ask]
+approval_mode = "approve"
+
+[mcp_servers.open-why.tools.open-why_get]
+approval_mode = "approve"
+```
+
+Merge these fields into the existing server table rather than declaring that
+table twice. Interactive clients can request approval instead. See the
+[official Codex MCP tool-policy documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+For broader acceptance, record the client version, OS, immutable binary source or
+release checksum, evidence reads, supersession and reconnection results.
 
 Only local stdio and the local Unix daemon are provided; there is no HTTP/SSE
 server, multi-user authentication service or Windows transport. Scopes are

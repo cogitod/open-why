@@ -1,7 +1,8 @@
 # Public-beta implementation plan
 
 Assessment date: 2026-10-09. Base beta work merged as `1f97e04` (PR #44).
-The post-merge regression follow-up is tracked separately from release publication.
+The post-merge regression follow-up landed in PR #45 at `ffb32f6`. The signed
+`v0.1.0-beta.1` tag identifies that reviewed runtime revision.
 See OSS_READINESS.md and VERIFICATION_REPORT.md for evidence rather than assuming
 that a checked box establishes independent adoption.
 
@@ -20,7 +21,8 @@ that a checked box establishes independent adoption.
   online WAL snapshot, no-overwrite destination, evidence-preserving round trip.
 - **P1 distribution:** beta version/lockfile, changelog and upgrade policy, clean
   source packaging, extracted-binary journey, SBOM/checksums/build record and
-  manually dispatched provenance workflow. Nothing published.
+  manually dispatched provenance workflow. Signed beta published with verified
+  hosted provenance, anonymous downloads and a public macOS archive smoke test.
 - **Post-merge audit:** initial merged commit passed hosted CI run 37906471276.
   Reproduced and fixed false-positive model diagnostics, stale remote decision-file
   reads and rejection of beta versions in integration manifests. Added a tested
@@ -29,15 +31,11 @@ that a checked box establishes independent adoption.
 - **P2:** accurate purpose/client limitations, contributor commands/tasks, private
   conduct email distinct from security reporting, scoped leak-hook exceptions.
 
-## Remaining gates, in dependency order
+## Remaining acceptance and follow-up work
 
 | Priority | Work | Acceptance | Dependency / owner |
 |---|---|---|---|
-| P0 follow-up gate | Land the reproduced diagnostic, remote-refresh and beta-manifest fixes | Regression tests and required hosted checks pass on the new PR head; no direct main push | Local fixes verified; follow-up PR review |
-| P1 | Verify native distribution targets | Linux/macOS candidate archives are installed and exercised on their declared architecture; no unsupported platform claims | Local macOS/Ubuntu ARM64 archives pass; hosted x86-64/provenance pending |
-| P1 | Independent first use | Outside developer records version/checksum, OS and actual MCP client/version; completes discover → install → evidence → evaluate → backup/restore → tested contribution | Reviewed candidate and an independent participant |
-| P1 | Authorize version tag and candidate workflow | Tag/version match reviewed main history; final assets pass validation and GitHub provenance verification | Explicit maintainer authorization; no local substitute for hosted attestations |
-| P1 | Publish and verify downloads | Immutable public install and checksum/provenance checks succeed from public URLs | Explicit release authorization; all previous gates |
+| P1 | Independent first use | Outside developer records version/checksum, OS and actual MCP client/version; completes discover → install → evidence → evaluate → backup/restore → tested contribution | Actual Codex 0.162.0 evidence read passed; an independent participant is still needed |
 | P2 | Create scoped public issues | Publish the acceptance criteria in docs/contributor-tasks.md as focused issues | Authorization to create externally visible issues |
 | P2 | Broaden held-out evaluation | Independently authored cases and real user traces are sanitized/consented; failures recorded before changing ranking | Actual adoption; no manufactured scores |
 

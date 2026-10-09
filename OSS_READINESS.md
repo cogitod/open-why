@@ -1,8 +1,9 @@
 # Public-beta readiness
 
-Assessment: 2026-10-09. Baseline: `ac2f19b`. Candidate: `0.1.0-beta.1`.
-Runtime and release tooling validated through `273ecb2`; subsequent assessment
-edits do not constitute a published release. See [verification evidence](VERIFICATION_REPORT.md).
+Assessment: 2026-10-09. Baseline: `ac2f19b`. Prerelease: `0.1.0-beta.1`.
+Runtime fixes are reviewed and merged at `ffb32f6` (PR #45). The signed
+`v0.1.0-beta.1` tag points to that revision. README illustrations landed separately
+in PR #46. See [verification evidence](VERIFICATION_REPORT.md).
 
 Ready means an outside developer can understand the purpose, install an
 identifiable version, retrieve useful evidence, maintain data safely, and
@@ -16,19 +17,24 @@ stable-release contract in STABILITY.md.
 | PR governance | Existing controls confirmed | Read-only GitHub inspection: PR required, strict current-branch checks, admin enforcement, resolved conversations, squash-only; zero required human approvals disclosed |
 | Store isolation | Implemented and tested | Six process regressions cover wrong identities, suffix collisions, concurrent stores, stale/redirected endpoints, replaced files and daemon death; baseline defects reproduced before fixing |
 | Repository scope | Implemented and tested | Remote URL basename collision reproduced and fixed; separate hashed caches, verified origins and explicit failed-refresh errors |
-| Installation | Tested locally | Recommended lexical install omits ONNX/tokenizers; packaged source and extracted binary pass the demo and maintenance journey; platform results in report |
+| Installation | Source and published archive tested | Recommended lexical install omits ONNX/tokenizers; packaged source and extracted binary pass the demo and maintenance journey; platform results in report |
 | Retrieval | Behavioral evidence available | Committed synthetic fixture; lexical and real local-model runs; immutable model revision and verified SHA-256 inputs; no broad accuracy claim |
 | Data maintenance | Tested | Online snapshot, schema/SQLite/digest verification, restore-to-new-path, preserved identity/evidence; live WAL/daemon and refusal tests |
-| Versioning and artifacts | Prepared, unpublished | `0.1.0-beta.1`, changelog, locked source archive, host binary, SBOM, checksums and local build record; remote attestation/download gates remain |
-| CI | Merged beta revision passed | Run 37906471276 passes at main 1f97e04; final PR run 37904010530 also passed; follow-up revisions require their own checks |
+| Versioning and artifacts | Published prerelease verified | Signed `v0.1.0-beta.1`; workflow 37972316016 passed; all assets passed checksum/provenance verification, all nine downloaded anonymously, and the public macOS archive passed the maintenance journey |
+| CI | Reviewed runtime revision passed | Main `ffb32f6` passed run 37909312971; README PR #46 passed run 37971256136; release-candidate validation is separate |
 | Contributions | Ready for outside review | Existing guide/templates/hooks retained; actual feature-matrix commands, scoped issue drafts, separate security/conduct contacts |
-| Independent adoption | Unverified | Real CLI/process harness is tested; no claim of actual Codex/Claude application-version acceptance or an independent human completing first use |
+| Client acceptance | Bounded Codex check passed | Codex CLI 0.162.0 on macOS ARM64 retrieved correct evidence through three real MCP calls; independent human first use, Claude Code and broader client journeys remain unverified |
 
-**Verdict: base beta work merged; regression follow-up ready for PR review; NO-GO for public
-release yet.** No unresolved critical isolation defect was observed in the
-executed tests. Public release still requires landing the regression follow-up, hosted checks on
-the release revision, validated/attested published artifacts, and recorded external-client acceptance.
-[PR #44](https://github.com/cogitod/open-why/pull/44) was squash-merged with
-maintainer authorization after all required checks passed. No remote settings, issues, tags or
-releases were created. Linux ARM64 packaged-artifact validation also passed;
-that Ubuntu 24.04 binary requires glibc 2.39 (see the report).
+**Verdict: GO for supervised beta evaluation using the published prerelease;
+independent first use remains an open acceptance gate.** No unresolved critical isolation
+defect was observed in the executed tests. Passing tests is not a guarantee of
+bug-free behavior or a substitute for independent first use.
+
+PR #44 established the beta foundation; PR #45 fixed the reproduced follow-up
+regressions and validated a vendor-neutral embedding example. Both were merged
+through the required checks. The maintainer authorized the signed version tag
+and release publication. The actual Codex client result and its approval-policy
+limitation are recorded in [integration notes](docs/integrations.md#beta-client-verification-scope).
+Linux ARM64 local packaged-artifact validation also passed; that Ubuntu 24.04
+binary requires glibc 2.39. Published targets are Apple Silicon and Ubuntu 24.04
+x86-64; the Linux archive also requires glibc 2.39. See the [release](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1).
