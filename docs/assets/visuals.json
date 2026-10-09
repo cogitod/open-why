@@ -1,0 +1,14 @@
+{
+  "generator": "Built-in OpenAI image generation",
+  "date": "2026-10-09",
+  "assets": [
+    {
+      "file": "open-why-hero.png",
+      "prompt": "Use case: ads-marketing. Create a wide, polished GitHub README banner for the open-source Rust project open-why. A restrained editorial illustration of recorded decisions: layered archival paper cards with fine citation threads connecting a selected decision to underlying source documents and a subtle chronological stack. Beautiful tactile paper, precise fine graphite lines, warm white background, quiet dark ink, subtle muted copper accent. Airy and highly legible at GitHub README width, broad landscape composition approximately 3:1, premium technical publishing aesthetic. Typeset only these exact words: large 'open-why'; smaller 'Decision memory for coding agents'; small 'Evidence you can inspect.' No other text, no pseudo-code, no badges, no brain, robot, glowing circuitry, checkmarks, or claims of verified truth. The archive illustration occupies the right side and the typography the left. This is an explanatory brand illustration, not a screenshot of software."
+    },
+    {
+      "file": "open-why-principles.png",
+      "prompt": "Use case: illustration-story. Create a wide 3:1 companion editorial illustration for the open-why GitHub README. Three beautifully composed equal panels on a continuous warm white paper background, fine dark graphite drafting lines, tactile archival card stock, subtle copper fasteners and connecting threads. Panel one: an open archive drawer holding a carefully retained decision card and older cards behind it, labeled exactly 'Recorded rationale'. Panel two: a selected card tethered by fine visible citation threads to two source pages, with a small optical magnifying lens over the source, labeled exactly 'Linked evidence'. Panel three: an empty reserved card sleeve with a simple question mark, honest absence rather than fabricated writing, labeled exactly 'Unknown when absent'. Use only these three labels and the question mark, no additional text. Elegant restrained technical publishing illustration, crisp dark labels easy to read at README width, plenty of whitespace. No arrows implying a mandatory pipeline; these are three product principles. No robots, brains, glow, fake UI, software screenshots, verified badges, check marks, or performance claims. Make the three concepts understandable at a glance, consistent material language across panels."
+    }
+  ]
+}

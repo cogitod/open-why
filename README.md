@@ -1,5 +1,7 @@
 # open-why
 
+![open-why — decision memory for coding agents, with evidence you can inspect. An archival decision card links to its source documents.](docs/assets/open-why-hero.png)
+
 [![CI](https://github.com/cogitod/open-why/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cogitod/open-why/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/cogitod/open-why)](LICENSE)
 
@@ -38,8 +40,8 @@ for reproducibility. Candidate artifacts must pass their install tests before
 publication. To remove the executable, run `cargo uninstall open-why`; your data
 and model cache remain on disk.
 
-Linux CI already exists. This candidate adds macOS CI; local macOS verification
-alone does not establish continuous platform support. See
+CI exercises Linux and macOS, including the pinned local-embedding evaluation.
+Passing CI does not establish the stronger stable-release guarantees. See
 [readiness](OSS_READINESS.md) and [stability expectations](STABILITY.md).
 
 Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on your `PATH`.
@@ -99,6 +101,8 @@ not establish the reason, say unknown. Do not edit the repository.
 `open-why_ask` returns scoped previews. `open-why_get` retrieves the complete
 current record, its Git links, and the supersession chain. These are recorded
 reasons to inspect, not proof that a decision was correct.
+
+![Three principles: preserve recorded rationale, link retrieved records to evidence, and say unknown when the reason was never recorded.](docs/assets/open-why-principles.png)
 
 Indexing reads commit messages and recognized decision Markdown files from Git,
 not uncommitted changes or all conversations. Automatic indexing happens only
