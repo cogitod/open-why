@@ -11,6 +11,8 @@ pub(super) const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_IMPORT_ROWS: usize = 1000;
 pub(super) const MAX_IMPORT_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const MAX_GIT_REFS: usize = 100;
+// Wire bytes including the line delimiter; allows JSON escaping of a 2 MiB import.
+pub(super) const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OPERATOR_DIAGNOSTIC_BYTES: usize = 2 * 1024;
 #[derive(Debug)]

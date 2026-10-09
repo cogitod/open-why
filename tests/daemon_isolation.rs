@@ -246,3 +246,56 @@ fn redirected_endpoint_cannot_authorize_another_physical_store() {
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
 }
+
+#[test]
+fn oversized_requests_close_direct_and_daemon_sessions_without_stopping_daemon() {
+    use std::io::Read;
+    let s = Sandbox::new();
+    let db = s.0.join("store.db");
+    drop(Store::open_with_store_instance_id(&db, "test:bounded").unwrap());
+    let mut daemon = None;
+    for mediated in [false, true] {
+        if mediated {
+            daemon = Some(start(&s, &db, "test:bounded"));
+        }
+        let mut client = Daemon(
+            s.command()
+                .env("OPEN_WHY_DB", &db)
+                .env("OPEN_WHY_STORE_INSTANCE_ID", "test:bounded")
+                .arg("serve")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        // Leave stdin open and omit LF: rejection cannot rely on client EOF.
+        let mut stdin = client.0.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || {
+            stdin.write_all(&vec![b' '; 8 * 1024 * 1024 + 1]).unwrap();
+            stdin
+        });
+        let end = Instant::now() + Duration::from_secs(5);
+        while client.0.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < end, "oversized request kept session alive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _stdin = writer.join().unwrap();
+        let mut output = String::new();
+        client
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(error["error"]["code"], -32600);
+        assert_eq!(error["id"], serde_json::Value::Null);
+        assert!(output.len() < 256);
+        assert!(exchange(&s, &db, "test:bounded").status.success());
+        if let Some(daemon) = &mut daemon {
+            assert!(daemon.0.try_wait().unwrap().is_none());
+        }
+    }
+}

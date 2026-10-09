@@ -453,3 +453,55 @@ notes, README and RELEASE.md; older GNU/Linux users should build from source.
 Remaining acceptance: an independent developer's complete first-use and
 contribution journey; Claude Code and broader real-client coverage. No general
 bug-free, broad retrieval-accuracy, or stable-API claim follows from this release.
+
+## Local security review — 2026-10-09 (after beta.1)
+
+This follow-up changes `main`; it does not change the published beta.1 artifacts.
+Use [SECURITY.md](../SECURITY.md) for the trust boundaries and release status.
+
+- **Secret discovery:** Gitleaks 8.30.1, downloaded from its official release and
+  checked against its published SHA-256, found zero matches across 76 reachable
+  commits. A second run including local reflogs scanned 105 commits with zero
+  matches. Commands: `gitleaks git --redact=100 --log-opts=--all .` and
+  `gitleaks git --redact=100 '--log-opts=--all --reflog' .`. These are scanner
+  results, not proof that arbitrary sensitive prose or unknown secrets are absent.
+  The tracked-file hook passed. GitHub's APIs reported zero open secret-scanning
+  and Dependabot alerts; private reporting and push protection were enabled.
+- **MCP resource boundary:** the pre-fix regression consumed all 16 MiB of an
+  unterminated input instead of stopping at 8 MiB + 1 byte. The fixed reader
+  bounds input before parsing and closes an oversized session with a small error.
+  Exact-limit frames, invalid UTF-8, EOF without LF, and bounded request IDs are
+  tested. Process coverage exercises direct stdio and daemon-mediated sessions,
+  keeps client stdin open, and verifies another client can still connect.
+- **Log disclosure:** the pre-fix leak-check regression showed a synthetic
+  credential was copied into scanner output. Matches now report file/line only;
+  the same regression passes. Required CI additionally scans history with a
+  checksum-pinned Gitleaks binary and redacted output.
+- **Git confidentiality:** an isolated clone reproduced cache mode `0755`.
+  New and reused application caches are now `0700`; a symlinked cache is rejected
+  without changing its target. Synthetic credential URLs are rejected before
+  cloning, without echoing them or creating a repository cache. Ordinary HTTPS
+  and SSH URLs remain supported through Git credential helpers/SSH agents.
+- **Existing boundaries reviewed:** store/endpoint identity and private-path
+  handling, parameterized retrieval SQL, argument-based Git invocation, immutable
+  model inputs, and read-only PR workflow permissions. No additional confirmed
+  injection or cross-store disclosure was found in this focused review. The
+  unchanged dependency lockfile passed the all-feature advisory/license/source
+  audit in [CI run 37981123540](https://github.com/cogitod/open-why/actions/runs/37981123540).
+
+Local verification used macOS ARM64 and isolated temporary stores/repositories:
+`cargo fmt --check`, `cargo build --release --locked`,
+`cargo clippy --release --all-targets --locked -- -D warnings`, and
+`cargo test --locked` passed. The default suite reported **181 passed, 0 failed,
+3 explicitly ignored** (two pinned-model checks run separately in CI and one
+manual diagnostic). `cargo test --locked --no-default-features` also passed
+with **180 passed, 0 failed, 0 ignored**. The focused MCP, daemon, and repository regressions took
+0.28 s, 0.67 s, and 0.91 s respectively, excluding compilation. Hosted CI remains
+the gate for Linux, macOS, MSRV, dependency checks, and pinned-model execution at
+the actual PR head; this local result does not stand in for those jobs.
+
+This was a maintainer audit, not an independent penetration test. Same-account
+malicious processes, arbitrary-volume indexing, prompt injection defenses in
+consumer agents, and authenticated remote hosting are outside the guarantees
+provided here. No credentials were detected that required revocation, and no
+new release was published as part of this review.

@@ -36,6 +36,10 @@ if output=$(cd "$fixture_repo" && bash hooks/check-leaks.sh staged 2>&1); then
   exit 1
 fi
 grep -q 'possible secret in secret.txt' <<<"$output"
+if grep -qF "$(printf 'AKIA%s' 'ABCDEFGHIJKLMNOP')" <<<"$output"; then
+  echo 'scanner exposed the detected secret in its output' >&2
+  exit 1
+fi
 grep -q 'records.txt contains 3 UUID-like identifiers' <<<"$output"
 grep -q 'private implementation provenance in provenance.txt' <<<"$output"
 
