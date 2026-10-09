@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Activate with: git config core.hooksPath hooks
+# Activate with: git config --local core.hooksPath hooks
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
+bash "$root/scripts/check-branch.sh"
+bash "$root/scripts/check-ci-pins.sh" staged
 bash "$root/scripts/check-rust-loc.sh" staged
 exec "$root/hooks/check-leaks.sh" staged

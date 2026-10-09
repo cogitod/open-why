@@ -30,7 +30,7 @@ Examples cover [MCP stdio](../examples/integrations/mcp-stdio.json) and the
 Validate a declaration without executing it:
 
 ```bash
-cargo run --bin why-integration-check -- examples/integrations/mcp-stdio.json
+cargo run --locked --bin why-integration-check -- examples/integrations/mcp-stdio.json
 ```
 
 For MCP integrations, build `why` and probe the declared command. The probe uses
@@ -38,8 +38,8 @@ an isolated temporary database, performs initialization and tool discovery, and
 checks the declared protocol version, contracts, and capabilities:
 
 ```bash
-cargo build --bin why
-cargo run --bin why-integration-check -- \
+cargo build --locked --bin why
+cargo run --locked --bin why-integration-check -- \
   examples/integrations/mcp-stdio.json --probe
 ```
 
@@ -73,3 +73,109 @@ v1 manifest. Removing a capability, changing scope or store-identity semantics,
 or changing a named contract requires a new contract version. The MCP protocol
 revision is explicit because protocol negotiation and open-why application
 contracts evolve independently.
+
+## Exact read contracts
+
+### Current rationale
+
+`open-why_get` implements `open-why.current-rationale/v1`. Given an exact record
+ID and scope, it follows the supersession chain at the server's current time. It
+returns the complete current record, that record's Git references, and the IDs it
+traversed. Unavailable records and invalid chains return typed errors.
+
+### Rationale history
+
+`open-why_history` implements `open-why.rationale-history/v1`. It pages one exact
+forward chain in predecessor-to-successor order. Each item contains a complete
+historical record and that record's Git references. A cursor names the inclusive
+first record of the next page. Each page uses one coherent, current database
+snapshot.
+
+The contract validates each record's temporal fields. It does not claim that
+adjacent intervals are contiguous or non-overlapping.
+
+### Commit links
+
+`open-why_commit_links` implements `open-why.commit-links/v1`. Given an explicit
+scope and exact, case-sensitive stored commit hash, it returns directly linked
+historical record IDs and commit subjects in ascending record-ID order. It does not
+return rationale bodies or rewrite IDs to current successors.
+
+Its cursor is the inclusive first record of the next page. Each page is a fresh,
+coherent snapshot. Pass a returned ID to `open-why_get` to resolve current rationale.
+
+## Library store operations
+
+Library hosts can inspect a database before opening it:
+
+```rust
+use open_why::{inspect_store, Store, StoreCompatibility};
+use std::path::Path;
+
+fn main() -> anyhow::Result<()> {
+    let path = Path::new("/path/to/open-why.db");
+    match inspect_store(path)? {
+        StoreCompatibility::Compatible { identity } => {
+            println!("store {}", identity.store_instance_id);
+        }
+        StoreCompatibility::MigrationRequired { .. } => {
+            let store = Store::open_with_store_instance_id(path, "my-host:primary")?;
+            println!("store {}", store.store_identity()?.store_instance_id);
+        }
+        state => println!("store is not ready: {state:?}"),
+    }
+    Ok(())
+}
+```
+
+`inspect_store` is read-only: it does not create a path, migrate a schema, or
+write SQLite sidecars. A live or indeterminate WAL state fails closed instead of
+reporting a potentially stale main-file view. Initial binding requires a
+provider-minted identity of 1 to 128 ASCII letters, digits, `.`, `_`, `:`, or `-`;
+a later explicit mismatch fails with a typed identity error.
+
+Create a consistent backup while the source store remains open, then restore by
+opening the snapshot as a normal bound store:
+
+```rust
+use open_why::Store;
+use std::path::Path;
+
+fn main() -> anyhow::Result<()> {
+    let source = Store::open(Path::new("/path/to/open-why.db"))?;
+    source.backup_to(Path::new("/path/to/new-backup.db"))?;
+
+    let restored = Store::open(Path::new("/path/to/new-backup.db"))?;
+    assert_eq!(source.store_identity()?, restored.store_identity()?);
+    Ok(())
+}
+```
+
+`Store::backup_to` uses SQLite's online-backup mechanism, so the snapshot
+includes committed WAL state. The destination must not already exist; on Unix,
+new directories are private and the database is created with mode `0600`.
+Failure removes the newly created destination rather than leaving a partial
+database that appears restorable. Restore means opening the snapshot through
+`Store`; retaining and protecting backup files against external filesystem or
+media loss remains the operator's responsibility.
+
+`Store::get_current_evidence_in_scope` resolves Current at the Store clock in one
+snapshot and returns `open-why.scoped-current-evidence/v1`, including a verified
+sealed evidence identity. Git links, supersession state, feedback, and retrieval
+counters do not change that identity. `Store::import_external` and its compatibility
+alias `Store::import_external_sealed` accept exact replays, report only newly created
+records, and reject a changed immutable envelope with `RecordIdentityConflict`
+before record or relation effects. `open-why_import` exposes the same result as
+`open-why.rationale-import/v1`. Existing MCP Current v1 outcomes remain unchanged.
+Canonical temporal values use ASCII `YYYY-MM-DDTHH:MM:SS[.digits]Z`. Their shared
+128-byte limit is measured over UTF-8 at runtime and generated from the same public
+constant in MCP catalog schemas.
+
+`Store::link_git_in_scope` accepts the sealed `EvidenceIdentity` returned by the
+scoped Current read. It verifies the store, scope, record, and immutable digest in
+one immediate transaction before creating a Git link. Its versioned result reports
+`created`, `exact_replay`, or a fixed typed error without exposing record authority.
+The existing `Store::link_git` method is retained only as a trusted, unscoped
+compatibility API. New scoped integrations should not call it. The MCP server keeps
+the existing `open-why_link` schema and success payload, but delegates its write to
+the scoped method.

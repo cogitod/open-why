@@ -121,8 +121,10 @@ invalid chains or cursors, and responses that exceed their limits.
 
 ## Interfaces
 
-The `why` binary provides bare questions plus `init`, `capture`, `search`, `get`,
-`link`, `import`, `fetch-model`, `feedback`, and `serve` commands. The crate also
+The `why` binary provides bare questions plus `setup`, `doctor`, `init`, `capture`,
+`search`, `get`, `link`, `import`, `fetch-model`, `feedback`, `serve`, and
+`serve-daemon` commands. `setup` prints client configuration; `doctor` inspects
+local configuration and store compatibility without modifying either. The crate also
 exposes the storage and retrieval types as a Rust library. `why serve` presents the
 same store through MCP over standard input and output.
 

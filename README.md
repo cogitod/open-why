@@ -1,27 +1,24 @@
 # open-why
 
-**Keep the reasons within reach.**
+[![CI](https://github.com/cogitod/open-why/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cogitod/open-why/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/cogitod/open-why)](LICENSE)
+
+**Decision memory for coding agents, with evidence you can inspect.**
+
+Ask why a repository uses SQLite, why a module is separate, or what replaced an
+old decision. open-why retrieves recorded rationale from Git history and decision
+documents, with source links and supersession history. When the reason was never
+recorded, the answer should be **unknown**.
+
+Use it through a local MCP server, the `why` CLI, or a Rust library. Records live
+in SQLite on your machine. Lexical retrieval needs no model or API key. Your
+connected AI client can receive retrieved records; optional remote embeddings
+also send text to the configured provider.
+
+[Install](#install-from-source) · [Connect your agent](#set-up-your-coding-agent) ·
+[Try an example](#try-an-isolated-example) · [Contribute](CONTRIBUTING.md)
 
 An open-source project by [Cogito](https://cogito.cv). Apache-2.0.
-
-Code records what changed. The reasons are often scattered across commits and
-decision documents. open-why makes that recorded reasoning available to you and
-your AI tools, with sources you can inspect before deciding what still applies.
-
-open-why is a Rust library and local MCP server that lets an LLM ask why code
-decisions were made. It indexes Git history and decision documents, stores
-rationale in SQLite, and returns scoped records with source metadata. A CLI is
-included as a convenience for setup and inspection.
-
-## Why we build this
-
-Our promise is **Make intelligence compound.** We build tools that help
-people carry what they learn into what they do next. open-why expresses that idea
-by preserving the reasons behind decisions and making them available for reuse.
-
-The returned records are evidence to examine. They do not establish that a past
-decision was correct, and missing rationale is not permission to invent an
-explanation. You can use open-why independently of our other products.
 
 ## Install from source
 
@@ -31,11 +28,14 @@ verified by CI; macOS is not yet a supported platform under the
 [stability contract](STABILITY.md).
 
 ```bash
-git clone https://github.com/cogitod/open-why.git
-cd open-why
-cargo install --locked --path . --bin why
+cargo install --locked --git https://github.com/cogitod/open-why --bin why
 why --version
 ```
+
+This installs the current `main` revision from source, using its committed
+lockfile. There are no prebuilt binaries in this installation path. To upgrade,
+repeat the install command with `--force`. To remove the executable, run
+`cargo uninstall open-why`; your database and model cache remain on disk.
 
 Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on your `PATH`.
 Building downloads ONNX Runtime even when you intend to use lexical search;
@@ -97,9 +97,11 @@ repository path. Retrieval does not automatically refresh a populated scope.
 
 ### Try an isolated example
 
-From the cloned open-why checkout, with `why` installed:
+With `why` installed, clone the repository to get the walkthrough:
 
 ```bash
+git clone https://github.com/cogitod/open-why.git
+cd open-why
 bash examples/quickstart.sh "$PWD/../open-why-demo" codex
 ```
 
@@ -165,36 +167,6 @@ Record reads and mutations require an explicit `scope`. Asking and indexing requ
 an explicit absolute repository path. Tool schemas reject unknown fields and bound
 input and response sizes.
 
-## Exact read contracts
-
-### Current rationale
-
-`open-why_get` implements `open-why.current-rationale/v1`. Given an exact record
-ID and scope, it follows the supersession chain at the server's current time. It
-returns the complete current record, that record's Git references, and the IDs it
-traversed. Unavailable records and invalid chains return typed errors.
-
-### Rationale history
-
-`open-why_history` implements `open-why.rationale-history/v1`. It pages one exact
-forward chain in predecessor-to-successor order. Each item contains a complete
-historical record and that record's Git references. A cursor names the inclusive
-first record of the next page. Each page uses one coherent, current database
-snapshot.
-
-The contract validates each record's temporal fields. It does not claim that
-adjacent intervals are contiguous or non-overlapping.
-
-### Commit links
-
-`open-why_commit_links` implements `open-why.commit-links/v1`. Given an explicit
-scope and exact, case-sensitive stored commit hash, it returns directly linked
-historical record IDs and commit subjects in ascending record-ID order. It does not
-return rationale bodies or rewrite IDs to current successors.
-
-Its cursor is the inclusive first record of the next page. Each page is a fresh,
-coherent snapshot. Pass a returned ID to `open-why_get` to resolve current rationale.
-
 ## CLI convenience
 
 The same store is available from a terminal for setup and inspection:
@@ -217,6 +189,16 @@ why serve                                                  # MCP over standard i
 Run `why --help` or `why <command> --help` for all arguments.
 
 ## Rust library
+
+Add the Git dependency to your application's `Cargo.toml`. Use a `rev` when you
+need to pin an integration to a reviewed commit; commit your application's
+lockfile. The example also uses `anyhow` for error handling.
+
+```toml
+[dependencies]
+open-why = { git = "https://github.com/cogitod/open-why" }
+anyhow = "1"
+```
 
 ```rust
 use open_why::Store;
@@ -241,77 +223,9 @@ database with lexical search. `Store::open_default` uses the configured embedder
 and default database path, and reads the required first-binding identity from
 `OPEN_WHY_STORE_INSTANCE_ID`.
 
-Library hosts can inspect a database before opening it:
-
-```rust
-use open_why::{inspect_store, Store, StoreCompatibility};
-use std::path::Path;
-
-let path = Path::new("/path/to/open-why.db");
-match inspect_store(path)? {
-    StoreCompatibility::Compatible { identity } => {
-        println!("store {}", identity.store_instance_id);
-    }
-    StoreCompatibility::MigrationRequired { .. } => {
-        let store = Store::open_with_store_instance_id(path, "my-host:primary")?;
-        println!("store {}", store.store_identity()?.store_instance_id);
-    }
-    state => println!("store is not ready: {state:?}"),
-}
-# Ok::<(), anyhow::Error>(())
-```
-
-`inspect_store` is read-only: it does not create a path, migrate a schema, or
-write SQLite sidecars. A live or indeterminate WAL state fails closed instead of
-reporting a potentially stale main-file view. Initial binding requires a
-provider-minted identity of 1 to 128 ASCII letters, digits, `.`, `_`, `:`, or `-`;
-a later explicit mismatch fails with a typed identity error.
-
-Create a consistent backup while the source store remains open, then restore by
-opening the snapshot as a normal bound store:
-
-```rust
-use open_why::Store;
-use std::path::Path;
-
-fn main() -> anyhow::Result<()> {
-    let source = Store::open(Path::new("/path/to/open-why.db"))?;
-    source.backup_to(Path::new("/path/to/new-backup.db"))?;
-
-    let restored = Store::open(Path::new("/path/to/new-backup.db"))?;
-    assert_eq!(source.store_identity()?, restored.store_identity()?);
-    Ok(())
-}
-```
-
-`Store::backup_to` uses SQLite's online-backup mechanism, so the snapshot
-includes committed WAL state. The destination must not already exist; on Unix,
-new directories are private and the database is created with mode `0600`.
-Failure removes the newly created destination rather than leaving a partial
-database that appears restorable. Restore means opening the snapshot through
-`Store`; retaining and protecting backup files against external filesystem or
-media loss remains the operator's responsibility.
-
-`Store::get_current_evidence_in_scope` resolves Current at the Store clock in one
-snapshot and returns `open-why.scoped-current-evidence/v1`, including a verified
-sealed evidence identity. Git links, supersession state, feedback, and retrieval
-counters do not change that identity. `Store::import_external` and its compatibility
-alias `Store::import_external_sealed` accept exact replays, report only newly created
-records, and reject a changed immutable envelope with `RecordIdentityConflict`
-before record or relation effects. `open-why_import` exposes the same result as
-`open-why.rationale-import/v1`. Existing MCP Current v1 outcomes remain unchanged.
-Canonical temporal values use ASCII `YYYY-MM-DDTHH:MM:SS[.digits]Z`. Their shared
-128-byte limit is measured over UTF-8 at runtime and generated from the same public
-constant in MCP catalog schemas.
-
-`Store::link_git_in_scope` accepts the sealed `EvidenceIdentity` returned by the
-scoped Current read. It verifies the store, scope, record, and immutable digest in
-one immediate transaction before creating a Git link. Its versioned result reports
-`created`, `exact_replay`, or a fixed typed error without exposing record authority.
-The existing `Store::link_git` method is retained only as a trusted, unscoped
-compatibility API. New scoped integrations should not call it. The MCP server keeps
-the existing `open-why_link` schema and success payload, but delegates its write to
-the scoped method.
+See [library inspection, backup, and scoped evidence](docs/integrations.md#library-store-operations)
+for integration details and [exact read contracts](docs/integrations.md#exact-read-contracts)
+for MCP read semantics.
 
 ## Third-party integrations
 
@@ -341,6 +255,15 @@ then keep the same concrete path in the client configuration.
 Without embedding configuration, open-why uses a previously fetched local model if
 present. Otherwise, search remains lexical-first. `why fetch-model` stores
 `Xenova/all-MiniLM-L6-v2` under `~/.cache/open-why/models/`.
+
+## Contributing
+
+Start with a reproducible bug report, a clearer example, or a focused fix. The
+[contributor guide](CONTRIBUTING.md) covers local setup, the source map, checks,
+and the required PR workflow. All changes to `main` go through a pull request
+with passing CI and resolved conversations; merges are squashed with the PR title
+and number. This is a single-maintainer project, so independent approval is not
+currently required.
 
 ## Project information
 

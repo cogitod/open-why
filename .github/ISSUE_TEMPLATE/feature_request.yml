@@ -6,7 +6,7 @@ body:
     id: details
     attributes:
       label: What and why
-      description: What you want, and the problem it solves. If it's outside the "why" wedge (see PLAN.md's "what we deliberately do NOT distill"), say why it belongs here anyway.
+      description: Describe a concrete task, what blocks you today, and how this would help capture or retrieve decision rationale. See the Product boundary in PLAN.md for scope.
       placeholder: |
         What:
         Why:
