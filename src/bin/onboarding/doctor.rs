@@ -56,6 +56,10 @@ fn check_store(path: &Path) -> Result<String> {
 }
 
 fn local_model(path: &Path, source: &str) -> Result<String> {
+    ensure!(
+        cfg!(feature = "local-embeddings"),
+        "local embeddings require the local-embeddings Cargo feature"
+    );
     for file in ["tokenizer.json", "onnx/model_quantized.onnx"] {
         ensure!(path.join(file).is_file(), "{source} model is missing {file}; restore the model files or remove the explicit model setting");
     }
@@ -84,7 +88,7 @@ fn check_embeddings() -> Result<String> {
         );
     }
     let cache = open_why::embed::model_cache_dir();
-    if cache.join("onnx/model_quantized.onnx").exists() {
+    if cfg!(feature = "local-embeddings") && cache.join("onnx/model_quantized.onnx").exists() {
         return local_model(&cache, "cached");
     }
     if optional_env("OPEN_WHY_AUTO_FETCH")?.as_deref() == Some("1") {
