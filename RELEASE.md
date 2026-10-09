@@ -34,7 +34,8 @@ The script refuses a dirty tree, packages the locked source, extracts it into a
 fresh directory, installs from that archive, and exercises that installed binary:
 version, isolated demo, index, capture, retrieval, MCP initialize, backup,
 verification, restore and exact evidence read. It produces a source `.crate`, a
-host-specific lexical binary archive, platform-named SHA256SUMS, a dependency SBOM and an
+host-specific lexical binary archive with resolved Cargo dependency license texts,
+platform-named SHA256SUMS, a dependency SBOM and an
 unsigned build record containing the source commit, features and toolchain.
 No tag, upload, attestation or release is created locally. Cargo caches may be
 reused; this is a fresh-source install, not proof of an offline or hermetic build.

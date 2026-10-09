@@ -56,9 +56,22 @@ checkout = source / ("open-why-" + version)
 install = out / "install"
 run("cargo", "install", "--locked", "--path", str(checkout), "--bin", "why", "--no-default-features", "--root", str(install), "--target-dir", str(out / "target"))
 binary = install / "bin" / "why"
+# Carry the actual resolved Cargo dependency notices with the binary archive.
+notices = []
+for dependency in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
+    directory = Path(dependency["manifest_path"]).parent
+    files = sorted(p for p in directory.iterdir() if p.is_file() and
+                   p.name.lower().startswith(("license", "licence", "copying", "notice", "copyright")))
+    require(bool(files), "missing dependency license text: " + dependency["name"])
+    for file in files:
+        notices.append(dependency["name"] + " " + dependency["version"] + " / " + file.name +
+                       "\n\n" + file.read_text(errors="replace"))
+notice_file = out / "THIRD_PARTY_NOTICES.txt"
+notice_file.write_text("Resolved Cargo dependency notices (compiler and OS libraries excluded).\n\n" + "\n\n".join(notices))
 name = "open-why-" + version + "-" + host + "-lexical.tar.gz"
 with tarfile.open(assets / name, "w:gz") as tar:
     tar.add(binary, arcname="why")
+    tar.add(notice_file, arcname="THIRD_PARTY_NOTICES.txt")
     for file in ["LICENSE", "NOTICE", "README.md"]:
         if (checkout / file).exists():
             tar.add(checkout / file, arcname=file)
