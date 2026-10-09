@@ -60,11 +60,12 @@ fn local_model(path: &Path, source: &str) -> Result<String> {
         cfg!(feature = "local-embeddings"),
         "local embeddings require the local-embeddings Cargo feature"
     );
-    for file in ["tokenizer.json", "onnx/model_quantized.onnx"] {
+    for file in ["tokenizer.json", "config.json", "onnx/model_quantized.onnx"] {
         ensure!(path.join(file).is_file(), "{source} model is missing {file}; restore the model files or remove the explicit model setting");
     }
+    open_why::embed::verify_model(path)?;
     Ok(format!(
-        "{source} local model files present; loading and inference not verified"
+        "{source} local model digests verified; loading and inference not verified"
     ))
 }
 
@@ -92,6 +93,10 @@ fn check_embeddings() -> Result<String> {
         return local_model(&cache, "cached");
     }
     if optional_env("OPEN_WHY_AUTO_FETCH")?.as_deref() == Some("1") {
+        ensure!(
+            cfg!(feature = "local-embeddings"),
+            "automatic model download requires the local-embeddings Cargo feature"
+        );
         return Ok("automatic model download configured for normal startup; download not attempted or verified".into());
     }
     Ok("lexical retrieval; no model or API key required".into())

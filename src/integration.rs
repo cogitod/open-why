@@ -166,17 +166,9 @@ fn validate_identifier(value: &str) -> Result<(), String> {
 }
 
 fn validate_version(value: &str, field: &str) -> Result<(), String> {
-    let parts: Vec<_> = value.split('.').collect();
-    if parts.len() != 3
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        return Err(format!(
-            "{field} must be a numeric major.minor.patch version"
-        ));
-    }
-    Ok(())
+    semver::Version::parse(value).map(|_| ()).map_err(|_| {
+        format!("{field} must be a semantic version (including beta/prerelease suffixes)")
+    })
 }
 
 fn validate_contracts(contracts: &[String]) -> Result<(), String> {

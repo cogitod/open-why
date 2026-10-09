@@ -99,3 +99,85 @@ fn same_basename_remote_repositories_never_share_checkout_or_evidence_scope() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("repository cache identity mismatch"));
     assert_eq!(std::fs::read(s.0.join("store.db")).unwrap(), before);
 }
+
+#[test]
+fn remote_reindex_reads_updated_decision_files() {
+    let s = Sandbox::new();
+    let remote = s.0.join("remotes/alpha/project.git");
+    std::fs::create_dir_all(remote.join("docs")).unwrap();
+    git(&s, &remote, &["init", "--quiet"]);
+    git(&s, &remote, &["config", "user.name", "Fixture"]);
+    git(
+        &s,
+        &remote,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    for content in [
+        "Initial storage rationale",
+        "Updated storage rationale",
+        "New default branch rationale",
+    ] {
+        if content == "New default branch rationale" {
+            git(&s, &remote, &["checkout", "-b", "next-main"]);
+        }
+        std::fs::write(remote.join("docs/decision.md"), content).unwrap();
+        git(&s, &remote, &["add", "docs/decision.md"]);
+        git(
+            &s,
+            &remote,
+            &[
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "-m",
+                "Update rationale",
+            ],
+        );
+        success(&index(&s, "alpha"));
+        let db = rusqlite::Connection::open(s.0.join("store.db")).unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM decisions WHERE kind='adr' AND content=?1",
+                [content],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "remote reindex did not read current decision file"
+        );
+    }
+    let db = rusqlite::Connection::open(s.0.join("store.db")).unwrap();
+    let scope: String = db
+        .query_row("SELECT scope FROM decisions LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    let cached = Path::new(&scope).join("docs/decision.md");
+    std::fs::write(&cached, "uncommitted cache edit").unwrap();
+    std::fs::write(
+        remote.join("docs/decision.md"),
+        "Remote update conflicting with cache edit",
+    )
+    .unwrap();
+    git(&s, &remote, &["add", "docs/decision.md"]);
+    git(
+        &s,
+        &remote,
+        &[
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "New remote rationale",
+        ],
+    );
+    let before = std::fs::read(s.0.join("store.db")).unwrap();
+    assert!(!index(&s, "alpha").status.success());
+    assert_eq!(
+        std::fs::read_to_string(&cached).unwrap(),
+        "uncommitted cache edit"
+    );
+    assert_eq!(std::fs::read(s.0.join("store.db")).unwrap(), before);
+    std::fs::rename(&remote, s.0.join("offline-remote")).unwrap();
+    assert!(!index(&s, "alpha").status.success());
+    assert_eq!(std::fs::read(s.0.join("store.db")).unwrap(), before);
+}
