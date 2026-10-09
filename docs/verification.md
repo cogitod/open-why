@@ -341,7 +341,7 @@ Local follow-up validation (macOS ARM64, Rust 1.98.0):
 The first diagnostic-test attempt used an unbound store without supplying its
 required identity; the test setup was corrected before reproducing the actual
 product failures. No failed setup or skipped test is counted as product success.
-The remaining release gates remain in IMPLEMENTATION_PLAN.md. Schema migration
+The remaining acceptance work is tracked in [the roadmap](roadmap.md). Schema migration
 and narrow compatibility APIs are retained deliberately; deleting them would
 break existing data or consumers, not improve beta readiness.
 
@@ -397,7 +397,7 @@ lexical archive: version, demo, index, capture, search, MCP initialize, backup,
 verification, restore and exact read. These are native x86-64 Linux and ARM64
 macOS builds. All ten candidate files (including the duplicate source archive)
 passed SHA-256 and GitHub attestation verification. The exact verification
-command in [RELEASE.md](RELEASE.md#authorized-publication-process) was run for
+command in [RELEASE.md](../RELEASE.md#authorized-publication-process) was run for
 each asset, enforcing the repository, release workflow, full source revision,
 tag ref and GitHub-hosted runner identity.
 

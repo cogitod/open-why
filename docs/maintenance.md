@@ -70,3 +70,29 @@ current compatible schema and refuse unknown or legacy layouts without
 modification. Use the old executable to make a backup before migration. A rollback
 uses the old executable and its pre-upgrade backup at a new path; it must not
 attempt to downgrade a newer database in place.
+
+## Check and recover your setup
+
+```bash
+why doctor --db "$HOME/.cache/open-why/open-why.db" --repo /absolute/path/to/repository
+```
+
+Omit `--db` to use `OPEN_WHY_DB` or the normal default path. Omit `--repo` to
+check only the store and embedding configuration. Doctor is read-only: it does
+not create a database, write SQLite sidecars, load models, download files, or
+contact services. Exit status 1 means a check failed or could not be verified.
+Remote connectivity, model inference, client connectivity, and index freshness
+are not verified by this command.
+
+| Symptom | Recovery |
+| --- | --- |
+| `why` is not found | Add Cargo's binary directory to `PATH`; run `why --version`. |
+| No MCP tools appear | Check your client's MCP status, the snippet's absolute executable path, and its stderr; reconnect after updating configuration. |
+| `identity_mismatch` | Restore the identity from the original configuration, or choose a new database path for an independent store. |
+| Database path rejected | Use an absolute path without symlink components; resolve trusted directory aliases first. |
+| Empty or incompatible existing file | Choose a new path, use the compatible build, or restore a verified backup. Setup does not overwrite or repair existing files. |
+| `migration_required` | Preserve a consistent backup, then use the documented Rust Store open API with the original identity to migrate a recognized legacy store. Setup deliberately refuses migration. See [durability and recovery](../STABILITY.md#durability-and-recovery). |
+| `live_wal_indeterminate` | Read-only inspection cannot verify this store. Close its writers and inspect a safely checkpointed snapshot, or use a new path. Do not delete WAL/SHM files. |
+| Local model missing or startup fails loading it | Restore the configured model files or unset the explicit model path. A cached model is also loaded automatically when present; move an unusable model cache aside to use lexical retrieval. |
+| Empty results or missing new decisions | Use the exact same absolute repository path as the scope, explicitly index it, and check that the reason was actually recorded. |
+| Remote embeddings configured unexpectedly | Inspect `OPEN_WHY_EMBED_URL` in the server environment. Removing it restores local/default selection; a connected cloud-model client still receives records it retrieves. |

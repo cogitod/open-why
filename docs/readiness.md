@@ -3,12 +3,13 @@
 Assessment: 2026-10-09. Baseline: `ac2f19b`. Prerelease: `0.1.0-beta.1`.
 Runtime fixes are reviewed and merged at `ffb32f6` (PR #45). The signed
 `v0.1.0-beta.1` tag points to that revision. README illustrations landed separately
-in PR #46. See [verification evidence](VERIFICATION_REPORT.md).
+in PR #46. See [verification evidence](verification.md). The remaining work has
+one home in the [roadmap](roadmap.md).
 
 Ready means an outside developer can understand the purpose, install an
 identifiable version, retrieve useful evidence, maintain data safely, and
 contribute a tested change using public material alone. This is weaker than the
-stable-release contract in STABILITY.md.
+[stable-release contract](../STABILITY.md).
 
 | Area | Status | Evidence / remaining gate |
 |---|---|---|
@@ -34,7 +35,7 @@ PR #44 established the beta foundation; PR #45 fixed the reproduced follow-up
 regressions and validated a vendor-neutral embedding example. Both were merged
 through the required checks. The maintainer authorized the signed version tag
 and release publication. The actual Codex client result and its approval-policy
-limitation are recorded in [integration notes](docs/integrations.md#beta-client-verification-scope).
+limitation are recorded in [integration notes](integrations.md#beta-client-verification-scope).
 Linux ARM64 local packaged-artifact validation also passed; that Ubuntu 24.04
 binary requires glibc 2.39. Published targets are Apple Silicon and Ubuntu 24.04
 x86-64; the Linux archive also requires glibc 2.39. See the [release](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1).

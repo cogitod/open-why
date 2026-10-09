@@ -13,18 +13,16 @@ vendor data models are not part of this contract.
 
 ## Platforms and toolchains
 
-The only continuously verified end-user platform is Linux as provided by
-GitHub's `ubuntu-24.04` runner. CI builds and tests the crate, CLI, and MCP stdio
-server with Rust 1.88 (the MSRV declared in `Cargo.toml`) and the current stable
-Rust toolchain.
+The beta CI builds and tests the crate, CLI, and local MCP server on Linux
+(`ubuntu-24.04`) with Rust 1.88 and current stable, and on macOS (`macos-14`)
+with current stable. The published beta's Linux x86-64 and Apple Silicon
+archives passed their native installation and maintenance journeys. See
+[readiness](docs/readiness.md), [verification evidence](docs/verification.md),
+and [binary runtime requirements](RELEASE.md).
 
-The implementation contains Unix-specific path protections for Linux, macOS, and
-Android, but macOS and Android are not continuously tested and therefore are not
-currently supported platforms under this contract. The beta candidate adds a
-macOS job; support is not promoted until that job has run successfully on the
-reviewed release commit. See OSS_READINESS.md for local evidence. Windows and other Unix
-targets are also unsupported. Adding a platform to the supported set requires a
-CI job that runs the full applicable evidence matrix on it.
+This is beta platform evidence, not a stable-release certification. Windows,
+Android and other targets remain unsupported. Adding a platform to the stable
+support set requires the full applicable evidence matrix to run on it.
 
 ## Compatibility
 
@@ -156,15 +154,16 @@ review before that date. An expired, broad, unexplained, or unused exception
 blocks a stable release; an exception is never evidence that the underlying
 dependency is safe.
 
-No release artifacts are published today. A future artifact is eligible for a
-stable release only when an automated release workflow, at the exact tagged
-revision, builds it from the committed lockfile and produces all of the
-following without modifying the artifact afterward:
+The published `v0.1.0-beta.1` artifacts have verified checksums, SBOMs and
+GitHub provenance. See [release verification](RELEASE.md). A future artifact is
+eligible for a stable release only when an automated release workflow, at the
+exact tagged revision, builds it from the committed lockfile and produces all
+of the following without modifying the artifact afterward:
 
 - a SHA-256 digest manifest covering every distributed file;
 - a dependency SBOM for the artifact;
 - a GitHub artifact attestation binding the artifact digest to this repository,
-  workflow, commit SHA, tag event, and hosted build environment; and
+  workflow, commit SHA, tag reference, and hosted build environment; and
 - a clean verification step that downloads the final artifact and verifies its
   digest and attestation against `https://github.com/cogitod/open-why` before
   publication.
@@ -172,8 +171,8 @@ following without modifying the artifact afterward:
 The release notes must link the workflow evidence and give users the digest and
 attestation verification command. Signing or attestation proves origin and build
 inputs, not correctness; all other stability evidence remains independently
-required. These requirements define the future release gate and do not add an
-artifact workflow or publish anything now.
+required. A validated beta artifact does not by itself satisfy all stable-release
+gates below.
 
 ## Evidence required for a stable release
 
@@ -188,7 +187,7 @@ checks or explicitly removed from the promised support set.
 | Lints | `cargo clippy --release --all-targets -- -D warnings` | Yes, both toolchains on Ubuntu |
 | Tests | `cargo test` | Yes, both toolchains on Ubuntu |
 | MSRV/current Rust | declared MSRV and current stable both pass | Yes, Rust 1.88 and current stable |
-| Supported OS | full matrix passes on every claimed OS | Linux only; macOS/Android/Windows are unmet |
+| Supported OS | full matrix passes on every claimed OS | Linux and macOS beta checks pass; Android/Windows unsupported; no stable OS set declared |
 | MCP contracts | schemas, bounds, typed errors, exact reads, and stdio smoke tests pass | Yes on Ubuntu |
 | Integration conformance | schema/examples and MCP probe pass automatically | Yes, exercised by `cargo test` on Ubuntu |
 | Store compatibility | fresh, recognized legacy, newer, partial, corrupt, identity, and migration cases pass | Yes for covered fixtures on Ubuntu |
@@ -197,7 +196,7 @@ checks or explicitly removed from the promised support set.
 | Privacy/leaks | tracked and staged-authority leak tests pass | Yes on Ubuntu |
 | Repository hardening | Rust size control and its tests pass | Yes on Ubuntu |
 | Dependency/supply chain | locked dependency audit and artifact provenance policy pass | Yes on Ubuntu: locked resolution, RustSec/yank, license/source policy, and immutable workflow-reference checks are release-blocking; future artifacts must satisfy the provenance policy above |
-| Release artifacts | packaged crate/binaries install and pass smoke tests on every supported OS | Unmet |
+| Release artifacts | packaged crate/binaries install and pass smoke tests on every supported OS | Beta Linux x86-64 and macOS ARM64 archives passed; repeat at each proposed stable release |
 
 Passing only the existing CI is necessary but not sufficient to call a release
 stable. The release notes must name the supported OS set, MSRV, stable contract

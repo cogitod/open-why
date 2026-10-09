@@ -8,6 +8,44 @@ Third-party code does not run inside `why`. Agent products and IDEs use the MCP
 stdio server. Rust hosts use the crate. External systems that produce rationale
 call the versioned import contract through one of those two interfaces.
 
+## Rust library
+
+Pin the reviewed beta revision in your application's `Cargo.toml` and commit its
+lockfile. This example uses lexical retrieval and `anyhow` for error handling.
+
+```toml
+[dependencies]
+open-why = { git = "https://github.com/cogitod/open-why", rev = "ffb32f6a9a9187df69ee812ea9a38a1014e4aea6", default-features = false }
+anyhow = "1"
+```
+
+```rust
+use open_why::Store;
+use std::path::Path;
+
+fn main() -> anyhow::Result<()> {
+    let store = Store::open_with_store_instance_id(
+        Path::new("/path/to/open-why.db"),
+        "my-app:open-why:replace-with-unique-id",
+    )?;
+    let hits = store.search("why sqlite", &["my-project"], &[], 10)?;
+    for hit in hits {
+        println!("{}: {}", hit.subject, hit.date);
+    }
+    Ok(())
+}
+```
+
+Mint one stable, unique identity for each database. New databases use
+`Store::open_with_store_instance_id`; `Store::open` reopens an already-bound
+database with lexical search. `Store::open_default` uses the configured embedder
+and default database path, and reads the required first-binding identity from
+`OPEN_WHY_STORE_INSTANCE_ID`.
+
+See [library inspection, backup, and scoped evidence](#library-store-operations)
+for integration details and [exact read contracts](#exact-read-contracts)
+for MCP read semantics.
+
 ## Embed in a host or action recorder
 
 No Git repository or vendor account is required for externally recorded rationale.
