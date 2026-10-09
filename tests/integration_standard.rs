@@ -145,3 +145,44 @@ fn failed_probe_removes_its_scratch_directory() {
     assert!(scratch_directories(&scratch_root).is_empty());
     let _ = fs::remove_dir(scratch_root);
 }
+
+#[test]
+fn integration_profiles_can_declare_the_running_beta_version() {
+    let mut manifest = load("examples/integrations/rust-library.json");
+    manifest.integration_version = env!("CARGO_PKG_VERSION").to_owned();
+    manifest.rust.as_mut().unwrap().minimum_version = env!("CARGO_PKG_VERSION").to_owned();
+    manifest.validate().unwrap();
+}
+
+#[test]
+fn manifest_versions_and_schema_patterns_agree() {
+    let cases = [
+        ("1.2.3", true),
+        ("0.1.0-beta.1", true),
+        ("1.2.3-rc.2+build.7", true),
+        ("1.2.3+build", true),
+        ("1.2", false),
+        ("01.2.3", false),
+        ("1.2.3-beta.01", false),
+        ("1.2.3-", false),
+        ("1.2.3+", false),
+        ("1.2.3\n", false),
+    ];
+    for (version, valid) in cases {
+        let mut manifest = load("examples/integrations/rust-library.json");
+        manifest.integration_version = version.to_owned();
+        assert_eq!(manifest.validate().is_ok(), valid, "integration {version}");
+        manifest.integration_version = "1.0.0".to_owned();
+        manifest.rust.as_mut().unwrap().minimum_version = version.to_owned();
+        assert_eq!(manifest.validate().is_ok(), valid, "crate {version}");
+    }
+    let output = Command::new("python3").arg("-c").arg(
+        "import json,re,sys; s=json.load(open(sys.argv[1])); c=json.loads(sys.argv[2]); patterns=[s['properties']['integration_version']['pattern'],s['$defs']['rust']['properties']['minimum_version']['pattern']]; assert all(bool(re.fullmatch(p,v)) == ok for p in patterns for v,ok in c)"
+    ).arg(root().join("spec/open-why.integration-v1.schema.json"))
+        .arg(serde_json::to_string(&cases).unwrap()).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -3,7 +3,7 @@
 Date: 2026-10-09. Baseline: `ac2f19b`. Runtime changes through `273ecb2`.
 Local branch: `feat/trustworthy-public-beta`. Version: `0.1.0-beta.1`.
 The maintainer authorized branch publication and hosted CI after local validation.
-[PR #44](https://github.com/cogitod/open-why/pull/44) is open. No issue, tag,
+[PR #44](https://github.com/cogitod/open-why/pull/44) merged as `1f97e04`. No issue, tag,
 release or remote setting change was made; candidate assets remain local.
 
 ## Recommendation
@@ -293,3 +293,51 @@ The hosted Linux runner uses x86-64, which this ARM64 container does not certify
 - **No mock evidence:** checksum verification detects corruption; it is not an
   attestation. Local build records are unsigned. Candidate repeat installation
   is tested; bit-for-bit binary reproducibility is not promised.
+
+## Post-merge regression and adapter audit
+
+The final PR head `ae6f37d` passed [run 37904010530](https://github.com/cogitod/open-why/actions/runs/37904010530).
+The squash-merged main revision `1f97e04` also passed [run 37906471276](https://github.com/cogitod/open-why/actions/runs/37906471276).
+Passing those checks did not mean the software was bug-free. A follow-up audit
+reproduced three gaps before applying fixes:
+
+1. Doctor could approve automatic local-model fetching on a lexical build, or
+   approve incomplete/corrupt local model inputs that normal startup rejects.
+   This was a diagnostic inconsistency introduced by the beta feature/pin policy.
+   Doctor now enforces feature availability, all required files and verified
+   digests without downloading, loading a model or modifying the store.
+2. Remote reindexing fetched commits but left HEAD unchanged when reading decision
+   files. This predates the beta cache-isolation fix. The cache now follows fetched
+   remote HEAD with a non-forced detached checkout. Tests cover subsequent edits,
+   a changed default branch, conflicting local cache edits and failed fetch;
+   refused refreshes preserve both cached edits and the evidence database.
+3. The integration validator accepted only numeric versions, so the beta version
+   introduced by PR #44 could not be declared in a manifest. Rust validation now
+   uses the semver parser; JSON schema patterns and the example support prerelease
+   and build versions. Tests compare accepted and rejected cases across both forms.
+
+The new `examples/embedded_adapter.rs` is executed by a normal integration test
+with both feature configurations. It uses public library APIs, synthetic external
+rationale and no Git repository, model, credentials or private service. Stable IDs,
+exact replay, supersession, evidence identity, missing/foreign-scope refusal,
+lexical retrieval and verified backup all execute. It is a reference pattern, not
+third-party product certification.
+
+Local follow-up validation (macOS ARM64, Rust 1.98.0):
+
+| Check | Result |
+|---|---|
+| `cargo test --locked` | 176 passed, 0 failed, 3 ignored |
+| `cargo test --locked --no-default-features` | 175 passed, 0 failed, 0 ignored |
+| Explicit pinned-model vector and retrieval tests | 2 passed, 0 failed; manual diagnostic remains ignored |
+| Format, release build and strict Clippy for both feature sets | Passed |
+| Dependency advisories, licenses and sources after adding semver | Passed |
+| Documented standalone adapter example | Passed; second use of existing directory refused |
+| Doctor against an intact pinned model and the example store | Digests verified; no model load or service request |
+
+The first diagnostic-test attempt used an unbound store without supplying its
+required identity; the test setup was corrected before reproducing the actual
+product failures. No failed setup or skipped test is counted as product success.
+The remaining release gates remain in IMPLEMENTATION_PLAN.md. Schema migration
+and narrow compatibility APIs are retained deliberately; deleting them would
+break existing data or consumers, not improve beta readiness.

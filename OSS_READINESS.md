@@ -20,15 +20,15 @@ stable-release contract in STABILITY.md.
 | Retrieval | Behavioral evidence available | Committed synthetic fixture; lexical and real local-model runs; immutable model revision and verified SHA-256 inputs; no broad accuracy claim |
 | Data maintenance | Tested | Online snapshot, schema/SQLite/digest verification, restore-to-new-path, preserved identity/evidence; live WAL/daemon and refusal tests |
 | Versioning and artifacts | Prepared, unpublished | `0.1.0-beta.1`, changelog, locked source archive, host binary, SBOM, checksums and local build record; remote attestation/download gates remain |
-| CI | Hosted initial PR run passed | Run 37902743944: required leak-check/build-and-test and macOS pass at 495acaf; Linux stable/MSRV, lexical and real-model cases execute; each later head needs its own checks |
+| CI | Merged beta revision passed | Run 37906471276 passes at main 1f97e04; final PR run 37904010530 also passed; follow-up revisions require their own checks |
 | Contributions | Ready for outside review | Existing guide/templates/hooks retained; actual feature-matrix commands, scoped issue drafts, separate security/conduct contacts |
 | Independent adoption | Unverified | Real CLI/process harness is tested; no claim of actual Codex/Claude application-version acceptance or an independent human completing first use |
 
-**Verdict: ready for PR review and supervised beta evaluation; NO-GO for public
+**Verdict: base beta work merged; regression follow-up ready for PR review; NO-GO for public
 release yet.** No unresolved critical isolation defect was observed in the
-executed tests. Public release still requires the reviewed commit's hosted checks,
-validated/attested published artifacts, and recorded external-client acceptance.
-[PR #44](https://github.com/cogitod/open-why/pull/44) was opened with maintainer
-authorization after local verification. No remote settings, issues, tags or
+executed tests. Public release still requires landing the regression follow-up, hosted checks on
+the release revision, validated/attested published artifacts, and recorded external-client acceptance.
+[PR #44](https://github.com/cogitod/open-why/pull/44) was squash-merged with
+maintainer authorization after all required checks passed. No remote settings, issues, tags or
 releases were created. Linux ARM64 packaged-artifact validation also passed;
 that Ubuntu 24.04 binary requires glibc 2.39 (see the report).

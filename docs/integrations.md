@@ -8,6 +8,30 @@ Third-party code does not run inside `why`. Agent products and IDEs use the MCP
 stdio server. Rust hosts use the crate. External systems that produce rationale
 call the versioned import contract through one of those two interfaces.
 
+## Embed in a host or action recorder
+
+No Git repository or vendor account is required for externally recorded rationale.
+An adapter can keep its raw action log in its own system and import only explicit
+human/agent decisions, facts or observations with stable IDs, source references,
+author, date and scope. An action alone does not establish why it happened;
+missing rationale must stay missing. Use explicit supersession for recorded
+corrections, and let open-why resolve current evidence and history.
+
+A runnable library example exercises import, exact replay, supersession, scoped
+current evidence, missing evidence, lexical retrieval and verified backup:
+
+```bash
+cargo run --locked --no-default-features --example embedded_adapter -- /absolute/new-adapter-demo
+cargo test --locked --no-default-features --test embedded_adapter
+```
+
+The [example](../examples/embedded_adapter.rs) refuses an existing demo directory
+and needs no model, credentials or private service. Its regression runs in normal
+CI with both Cargo feature sets. This is a generic integration pattern, not a
+claim that any particular third-party product has integrated or been certified.
+Choose MCP for a process boundary or the library for a Rust host; neither requires
+running vendor code inside open-why or accessing its SQLite tables directly.
+
 ## Required invariants
 
 - Every operation supplies an explicit repository or scope.
@@ -24,6 +48,11 @@ call the versioned import contract through one of those two interfaces.
 
 The canonical schema is
 [`spec/open-why.integration-v1.schema.json`](../spec/open-why.integration-v1.schema.json).
+Version fields accept semantic versions, including `0.1.0-beta.1`.
+The manifest validates declarations; a minimum-version string does not itself
+pin Cargo resolution or prove downstream compatibility. Pin the reviewed Git
+revision and run the host's own tests.
+
 Examples cover [MCP stdio](../examples/integrations/mcp-stdio.json) and the
 [Rust library](../examples/integrations/rust-library.json).
 

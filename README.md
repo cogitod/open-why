@@ -249,7 +249,9 @@ for MCP read semantics.
 Developer tools integrate through the MCP stdio server or the Rust library.
 `open-why.integration/v1` provides a machine-readable compatibility manifest and
 an executable conformance check without loading third-party code into the server.
-See [the integration standard](docs/integrations.md).
+See [the integration standard](docs/integrations.md) and its
+[runnable host adapter](docs/integrations.md#embed-in-a-host-or-action-recorder).
+External rationale does not need a Git repository or a private service.
 
 ## Configuration
 

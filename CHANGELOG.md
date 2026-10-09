@@ -5,6 +5,13 @@ limits. Unreleased entries are not evidence that artifacts are publicly availabl
 
 ## 0.1.0-beta.1 — unreleased candidate
 
+- Follow-up review: doctor now checks all pinned model inputs/digests and refuses
+  auto-fetch on lexical builds. Remote reindexing advances its managed checkout
+  to fetched HEAD before reading decision files and refuses conflicting edits.
+- Integration manifests accept semantic prerelease/build versions; the library
+  example declares the beta minimum and demonstrates external event rationale
+  through public APIs, including replay, supersession and scope refusal.
+
 - Fix daemon identity bypass and database endpoint collisions. New endpoints
   append `.sock` to the whole filename. Stop old daemons before upgrading;
   stale sockets now fail closed. Relative paths remain supported, while parent

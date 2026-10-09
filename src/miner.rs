@@ -47,7 +47,10 @@ fn clone_repo(url: &str) -> Result<PathBuf> {
             "repository cache identity mismatch"
         );
         // A failed refresh must not silently present old evidence as a fresh index.
-        git(&dest, &["fetch", "--depth", "200", "origin"])?;
+        git(&dest, &["fetch", "--depth", "200", "origin", "HEAD"])?;
+        // Decision files are read from HEAD; fetching alone leaves them at the old revision.
+        // No force/reset: refuse conflicting cache edits instead of discarding them.
+        git(&dest, &["checkout", "--detach", "FETCH_HEAD"])?;
         return Ok(dest);
     }
     if let Some(parent) = dest.parent() {
