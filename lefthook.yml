@@ -1,5 +1,7 @@
 pre-commit:
   jobs:
+    - name: topic-branch
+      run: bash scripts/check-branch.sh
     - name: ci-pins
       run: bash scripts/check-ci-pins.sh staged
     - name: rust-loc

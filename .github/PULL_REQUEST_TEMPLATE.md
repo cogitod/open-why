@@ -1,23 +1,14 @@
-## What changed
+## Problem and behavior
 
-## Why
+<!-- Describe the user-visible problem and resulting behavior. Link an issue if relevant. -->
 
-## Linked issue
-Fixes #
+## Validation
 
-## Testing
-- [ ] `cargo fmt --check`
-- [ ] `cargo clippy --release --all-targets --locked -- -D warnings`
-- [ ] `cargo test --locked`
-- [ ] dependency policy and immutable CI-reference checks pass
-- [ ] `bash hooks/check-leaks.sh staged`
-- [ ] If ranking changed (`src/db.rs`, `src/relevance.rs`): ran `why-golden` and noted the pass count below
+<!-- List checks actually run and their results. Note any behavior, contract, or platform limits. -->
 
-## Promotion
-- [ ] This scoped topic branch started from the current `origin/main`
-- [ ] I reviewed the complete final diff at the latest PR head
-- [ ] `leak-check` and `build-and-test` are green
-- [ ] All review conversations are resolved
+- [ ] I reviewed the complete final diff at this PR's latest head.
+- [ ] Relevant tests and staged-file checks pass (see CONTRIBUTING.md).
+- [ ] Any ranking or contract change has representative regression evidence.
 
-## Notes
-Note behavior changes, ranking-constant changes, and follow-up work that is outside this PR.
+<!-- Maintainers: squash merge only after leak-check and build-and-test pass,
+     the branch is up to date, and all review conversations are resolved. -->

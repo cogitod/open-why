@@ -6,10 +6,10 @@ body:
     id: version
     attributes:
       label: Version / commit
-      description: "`why --version`, or the commit SHA if you built from source"
+      description: "Include `why --version` and the installed commit SHA if known."
       placeholder: v0.1.0 or a1b2c3d
     validations:
-      required: false
+      required: true
   - type: dropdown
     id: os
     attributes:
@@ -21,6 +21,14 @@ body:
         - Other
     validations:
       required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Installation and client
+      description: How you installed open-why, plus your MCP client and version (or CLI / Rust library).
+      placeholder: Cargo Git install; Claude Code, Codex, another MCP client, or CLI
+    validations:
+      required: true
   - type: textarea
     id: details
     attributes:
@@ -30,6 +38,11 @@ body:
         Summary:
         Steps to reproduce:
         Expected vs. actual:
-        Anything else (logs, `OPEN_WHY_DEBUG_RANK=1` output, etc.):
+        Minimal example (use synthetic data):
     validations:
       required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics (optional)
+      description: Include relevant errors or `why doctor` output. Remove personal paths, repository contents, tokens, and private records before posting. Report vulnerabilities privately using the security link.
