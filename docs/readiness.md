@@ -6,9 +6,14 @@ Runtime fixes are reviewed and merged at `ffb32f6` (PR #45). The signed
 in PR #46. See [verification evidence](verification.md). The remaining work has
 one home in the [roadmap](roadmap.md).
 
-Credential and transport hardening after this tag is tracked in
-[SECURITY.md](../SECURITY.md) and the [unreleased changelog](../CHANGELOG.md#unreleased).
-It requires a follow-up release before it applies to downloadable binaries.
+Beta.2 includes the credential and transport hardening tracked in
+[SECURITY.md](../SECURITY.md) and [CHANGELOG.md](../CHANGELOG.md). PRs #50 and #51
+passed required Linux/macOS CI; the privacy change passed 184 local default tests
+(three explicitly ignored) and 183 lexical tests (none ignored). The model checks
+run separately in CI. The table below preserves beta.1 distribution evidence;
+[beta.2 release notes](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.2)
+record its exact source revision, hosted artifact validation and public-download
+verification when published. Source changes alone do not satisfy those gates.
 
 Ready means an outside developer can understand the purpose, install an
 identifiable version, retrieve useful evidence, maintain data safely, and

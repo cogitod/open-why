@@ -3,8 +3,9 @@
 ## Supported versions
 
 open-why is pre-1.0. Only `main` and the latest tagged release are supported. There
-are no maintained older branches. The hardening below is on `main` and is **not
-included in `v0.1.0-beta.1`**; a follow-up release is pending. That tag is immutable.
+are no maintained older branches. The hardening below is included in `v0.1.0-beta.2` and later.
+It is **not included in `v0.1.0-beta.1`**; upgrade to receive these protections.
+Published tags are immutable.
 
 ## Reporting a vulnerability
 

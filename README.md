@@ -29,13 +29,13 @@ embeddings add semantic retrieval. Imports can preserve explicit rationale from
 other tools without a Git repository. open-why stores recorded explanations; it
 does not reconstruct unrecorded reasoning or establish that a decision was correct.
 
-**Status: public beta, `0.1.0-beta.1`.** Installation, store isolation, retrieval,
+**Status: public beta, `0.1.0-beta.2`.** Installation, store isolation, retrieval,
 and backup/restore have automated verification. An actual Codex CLI session has
 passed a bounded evidence-read check. Independent human first use and broader
 client coverage remain open; see [readiness and limitations](docs/readiness.md).
 
-Security hardening added after this tag is described in [SECURITY.md](SECURITY.md).
-A follow-up release is pending. On `main`, recognizable credentials are rejected
+This version includes the hardening described in [SECURITY.md](SECURITY.md).
+Recognizable credentials are rejected
 before ingestion or embedding; ordinary private rationale remains local unless
 a client or remote embedding provider is explicitly connected. See the
 [data policy and limits](SECURITY.md#data-ingestion-policy-after-beta1).
@@ -46,14 +46,14 @@ You need Git, Rust 1.88 or newer, and your platform's native build tools:
 
 ```bash
 cargo install --locked --git https://github.com/cogitod/open-why \
-  --tag v0.1.0-beta.1 --bin why --no-default-features
+  --tag v0.1.0-beta.2 --bin why --no-default-features
 why --version
 ```
 
 Add Cargo's binary directory (normally `~/.cargo/bin`) to `PATH`. This installs
 the versioned lexical build without ONNX Runtime or model downloads.
 
-[Prebuilt binaries](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1)
+[Prebuilt binaries](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.2)
 are available for Apple Silicon and Ubuntu 24.04 x86-64 (**glibc 2.39 required**).
 Follow [release verification and upgrades](RELEASE.md) before using an archive.
 Linux and macOS are tested; Windows is unsupported.
@@ -110,7 +110,7 @@ on first ask. After new commits, call `open-why_index` explicitly to refresh it.
 With `why` installed:
 
 ```bash
-git clone --branch v0.1.0-beta.1 --depth 1 https://github.com/cogitod/open-why.git
+git clone --branch v0.1.0-beta.2 --depth 1 https://github.com/cogitod/open-why.git
 cd open-why
 bash examples/quickstart.sh "$PWD/../open-why-demo" codex
 ```

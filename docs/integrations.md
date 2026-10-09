@@ -15,7 +15,7 @@ lockfile. This example uses lexical retrieval and `anyhow` for error handling.
 
 ```toml
 [dependencies]
-open-why = { git = "https://github.com/cogitod/open-why", rev = "ffb32f6a9a9187df69ee812ea9a38a1014e4aea6", default-features = false }
+open-why = { git = "https://github.com/cogitod/open-why", tag = "v0.1.0-beta.2", default-features = false }
 anyhow = "1"
 ```
 
