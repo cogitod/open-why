@@ -9,6 +9,9 @@ limits. Unreleased entries are not evidence that artifacts are publicly availabl
   append `.sock` to the whole filename. Stop old daemons before upgrading;
   stale sockets now fail closed. Relative paths remain supported, while parent
   traversal, symlink aliases and hard-linked MCP stores are rejected.
+- Isolate remote Git caches by full URL identity and validate cached origin.
+  Old basename caches are retained but no longer reused; reindex a URL into its
+  new scope. Failed refresh now returns an error instead of silently using stale evidence.
 - Add backup, verify-backup and restore-to-new-path commands. They preserve store
   identity and reject missing, incompatible or corrupt sources and overwrites.
 - Keep local embeddings enabled in default Cargo builds; offer

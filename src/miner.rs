@@ -1,5 +1,6 @@
 use crate::store::{cache_dir, Decision};
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -32,19 +33,21 @@ fn looks_like_url(r: &str) -> bool {
 }
 
 fn clone_repo(url: &str) -> Result<PathBuf> {
-    let slug = url
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .rsplit('/')
-        .next()
-        .unwrap_or("repo");
-    let dest = cache_dir().join("repos").join(slug);
+    // Full URL identity prevents unrelated owners/hosts with the same basename
+    // from sharing a checkout, and avoids exposing URL credentials in path names.
+    let key: String = Sha256::digest(url.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let dest = cache_dir().join("repos").join(key);
     if dest.join(".git").exists() {
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&dest)
-            .args(["fetch", "--depth", "200", "origin"])
-            .output();
+        let origin = git(&dest, &["config", "--get", "remote.origin.url"])?;
+        anyhow::ensure!(
+            origin.trim_end() == url,
+            "repository cache identity mismatch"
+        );
+        // A failed refresh must not silently present old evidence as a fresh index.
+        git(&dest, &["fetch", "--depth", "200", "origin"])?;
         return Ok(dest);
     }
     if let Some(parent) = dest.parent() {

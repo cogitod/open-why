@@ -105,6 +105,12 @@ not uncommitted changes or all conversations. Automatic indexing happens only
 when the scope contains no records. After new commits—or if you captured a
 record before the first ask—call `open-why_index` with the same absolute
 repository path. Retrieval does not automatically refresh a populated scope.
+Remote Git URLs use separate caches keyed by the full URL and verify the cached
+origin before refresh. Different owners or hosts with the same repository name
+remain separate. Older basename caches are not reused; reindex remote URLs after
+upgrading to this candidate. Existing records in old scopes remain unchanged.
+A failed remote refresh returns an error; local-path indexing remains available
+offline.
 
 ### Try an isolated example
 
