@@ -26,3 +26,6 @@ rustix = { version = "1", features = ["fs"] }
 
 [profile.release]
 strip = false
+
+[dev-dependencies]
+toml = "0.8"

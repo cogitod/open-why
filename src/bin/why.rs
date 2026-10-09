@@ -4,6 +4,8 @@ use open_why::{
     answer, db, embed, mcp, miner, store, CurrentRecordResolution, RankExplanation, Record,
 };
 
+mod onboarding;
+
 /// Ask why a decision was made, with its evidence.
 #[derive(Parser)]
 #[command(
@@ -30,6 +32,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create or inspect a store and print ready-to-copy MCP configuration
+    Setup {
+        /// Absolute database path; existing stores retain their identity
+        #[arg(long)]
+        db: std::path::PathBuf,
+        /// Configuration format to print (client files are never edited)
+        #[arg(long, value_enum)]
+        client: onboarding::Client,
+    },
+    /// Check setup without changing the store or contacting embedding services
+    Doctor {
+        /// Absolute database path (default: OPEN_WHY_DB or the normal store path)
+        #[arg(long)]
+        db: Option<std::path::PathBuf>,
+        /// Optional absolute Git repository path to check
+        #[arg(long)]
+        repo: Option<std::path::PathBuf>,
+    },
     /// Index a repository's decision history (commits + ADRs) into the store
     Init {
         /// Path or git URL (default: current directory)
@@ -127,6 +147,8 @@ fn main() -> Result<()> {
     match cli.command {
         None => ask_bare(&cli),
         Some(cmd) => match cmd {
+            Command::Setup { db, client } => onboarding::setup(&db, client),
+            Command::Doctor { db, repo } => onboarding::doctor(db.as_deref(), repo.as_deref()),
             Command::Init { repo } => {
                 let repo = miner::resolve_repo(repo)?;
                 let decisions = miner::mine(&repo)?;

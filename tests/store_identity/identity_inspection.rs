@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn onboarding_refuses_legacy_migration_without_changing_the_store() {
+    let dir = temp_dir("onboarding-legacy");
+    let path = dir.join("legacy.db");
+    create_legacy(&path);
+    assert!(matches!(
+        inspect_store(&path).unwrap(),
+        StoreCompatibility::MigrationRequired { .. }
+    ));
+    let before = std::fs::read(&path).unwrap();
+    for subcommand in ["setup", "doctor"] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_why"));
+        command
+            .arg(subcommand)
+            .arg("--db")
+            .arg(&path)
+            .env("OPEN_WHY_STORE_INSTANCE_ID", "test:legacy")
+            .env("OPEN_WHY_AUTO_FETCH", "0")
+            .env_remove("OPEN_WHY_EMBED_MODEL_PATH")
+            .env_remove("OPEN_WHY_EMBED_URL");
+        if subcommand == "setup" {
+            command.args(["--client", "generic"]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(text.contains("migration_required"), "{text}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn store_identity_is_stable_distinct_and_preserved_by_copy() {
     let first_dir = temp_dir("stable-store");
     let first_path = first_dir.join("store.db");
