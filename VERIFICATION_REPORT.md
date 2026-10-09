@@ -154,7 +154,7 @@ reported source commit, host and toolchain are in each candidate's build JSON.
 | Step | Command / evidence | Expected and observed behavior |
 |---|---|---|
 | Discover / understand | README, CHANGELOG, limitations and public fixture reviewed | Purpose is recorded evidence; absent rationale is not invented; independent comprehension untested |
-| Install identifiable source | `python3 scripts/prepare-release.py /private/tmp/open-why-beta-candidate-2` | Clean source `.crate` extracted; `cargo install --locked --path <extracted> --bin why --no-default-features` succeeds |
+| Install identifiable source | `python3 scripts/prepare-release.py /private/tmp/open-why-beta-candidate-final` | Clean source `.crate` extracted; `cargo install --locked --path <extracted> --bin why --no-default-features` succeeds |
 | Version | Extracted archive's `why --version` | `why 0.1.0-beta.1` |
 | Initialize | `OPEN_WHY_BIN=<archive>/why bash examples/quickstart.sh <new-directory> generic`; `why init <demo>/repository` | Private store/config and synthetic Git repository created; rationale indexed |
 | Store | `why capture --id release-smoke --title 'Release smoke evidence' --content 'Synthetic artifact validation'` | Record captured in isolated store |
@@ -166,6 +166,28 @@ reported source commit, host and toolchain are in each candidate's build JSON.
 | Contribute | Topic commits, staged hooks, shell regressions and Rust matrix | Checks execute locally; public issue/PR creation not authorized |
 | Pass CI | Local CI-equivalent commands and actionlint | Local checks pass; hosted workflow execution remains pending |
 | Install public versioned release | RELEASE.md commands and local archive | Local immutable candidate works; no public beta tag/download exists yet |
+
+## Final local candidate
+
+Prepared and validated from clean commit
+`03d5a1167ed3b24875b9b51eb5ee36d48927429d` on macOS ARM64. This final
+report entry is a later documentation-only update. Candidate assets are local
+under `/private/tmp/open-why-beta-candidate-final/assets`; they are not public
+release downloads.
+
+| Asset | SHA-256 |
+|---|---|
+| open-why-0.1.0-beta.1.crate | 57bd165aaffb8abc8d913fca3a1d19304070c2a7307ee57722446a88245174a7 |
+| open-why-0.1.0-beta.1-aarch64-apple-darwin-lexical.tar.gz | 37738f4d7ccd5dad7fb9abccfcaf9f17b2f50c2ca4badcd67b3167adbe1cee8f |
+| build-aarch64-apple-darwin.json | d592d4447a57f2824c1d923a2defd6db1ff8685662d5478916c6a4da42f0d98e |
+| sbom-aarch64-apple-darwin.cdx.json | f1c9b508fed19abb9da8c4e188f980bc3661917be43a563c7bce28f67e7ad24b |
+
+`shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin` returned OK for all
+four assets. The binary archive contains `why`, dependency license texts,
+LICENSE and README. `otool -L` reported only system `libiconv` and `libSystem`
+dynamic dependencies. The extracted binary completed the full scripted journey;
+no real user store was opened. Public provenance remains unverified until the
+hosted attestation workflow executes on an authorized tag.
 
 ## Failures observed and handled
 
