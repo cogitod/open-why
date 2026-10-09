@@ -29,8 +29,9 @@ fn start(s: &Sandbox, path: &Path, id: &str) -> Daemon {
         .unwrap();
     let mut daemon = Daemon(child);
     let end = Instant::now() + Duration::from_secs(10);
-    while !path.with_extension("sock").exists()
-        && !Path::new(&format!("{}.sock", path.display())).exists()
+    use std::os::unix::fs::PermissionsExt;
+    while !std::fs::metadata(format!("{}.sock", path.display()))
+        .is_ok_and(|m| m.permissions().mode() & 0o077 == 0)
     {
         assert!(daemon.0.try_wait().unwrap().is_none(), "daemon exited");
         assert!(Instant::now() < end, "daemon startup timeout");
@@ -49,13 +50,20 @@ fn exchange(s: &Sandbox, path: &Path, id: &str) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
+    let written = child
         .stdin
         .take()
         .unwrap()
-        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
-        .unwrap();
-    child.wait_with_output().unwrap()
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
+    // Rejected startup may close stdin before the parent writes, especially on Linux.
+    if let Err(error) = written {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+    let output = child.wait_with_output().unwrap();
+    if output.status.success() {
+        assert!(String::from_utf8_lossy(&output.stdout).contains("serverInfo"));
+    }
+    output
 }
 #[test]
 fn identity_is_enforced_directly_and_through_daemon() {
