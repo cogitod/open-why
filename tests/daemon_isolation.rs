@@ -184,3 +184,57 @@ fn replaced_database_and_ambiguous_paths_are_rejected() {
         .status
         .success());
 }
+
+#[test]
+fn proxy_exits_when_daemon_dies_even_with_client_stdin_open() {
+    use std::io::{BufRead, BufReader};
+    let s = Sandbox::new();
+    let db = s.0.join("store.db");
+    drop(Store::open_with_store_instance_id(&db, "test:a").unwrap());
+    let daemon = start(&s, &db, "test:a");
+    let mut proxy = s
+        .command()
+        .env("OPEN_WHY_DB", &db)
+        .arg("serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    proxy
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(proxy.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("serverInfo"));
+    drop(daemon);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while proxy.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = proxy.kill();
+            let _ = proxy.wait();
+            panic!("proxy hung after daemon exit");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn redirected_endpoint_cannot_authorize_another_physical_store() {
+    let s = Sandbox::new();
+    let a = s.0.join("a.db");
+    let b = s.0.join("b.db");
+    // Copied stores can deliberately share a logical identity, so identity alone is insufficient.
+    for path in [&a, &b] {
+        drop(Store::open_with_store_instance_id(path, "test:shared").unwrap());
+    }
+    let _daemon = start(&s, &a, "test:shared");
+    std::fs::rename(s.0.join("a.db.sock"), s.0.join("b.db.sock")).unwrap();
+    let result = exchange(&s, &b, "test:shared");
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+}

@@ -97,14 +97,15 @@ pub(super) fn serve_daemon() -> Result<()> {
 fn proxy_stdio(stream: UnixStream) -> Result<()> {
     let mut upstream = stream.try_clone()?;
     let mut downstream = stream;
-    let relay_stdin = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let _ = io::copy(&mut io::stdin(), &mut upstream);
         // Half-close so the daemon's reader sees EOF on this connection instead of
         // blocking forever for more input that will never arrive.
         let _ = upstream.shutdown(std::net::Shutdown::Write);
     });
-    let _ = io::copy(&mut downstream, &mut io::stdout());
-    let _ = relay_stdin.join();
+    // Do not join a thread blocked on client stdin after the daemon disconnects.
+    // Returning lets the CLI process terminate and the MCP client reconnect.
+    io::copy(&mut downstream, &mut io::stdout())?;
     Ok(())
 }
 
