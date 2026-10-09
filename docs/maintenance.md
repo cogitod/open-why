@@ -27,6 +27,11 @@ independently stored SHA-256 if you need to detect changes to the snapshot file.
 
 ## Running processes
 
+A daemon uses the embedding settings of the process that started it; proxy
+clients share that backend. Stop and restart it to change embedding settings.
+Local filesystems with SQLite-compatible locking are the tested storage target;
+network filesystems have not been qualified.
+
 Backup uses SQLite's online snapshot API and includes committed WAL data while
 a daemon or another writer is running. Verification and backup can encounter
 SQLite locks; retry after the writer completes. A read-only connection to a live

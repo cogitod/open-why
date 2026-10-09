@@ -17,7 +17,7 @@ CI explicitly runs them. The additional ignored cosine table is a manual debug
 utility, not part of acceptance.
 
 Model: Apache-2.0 `Xenova/all-MiniLM-L6-v2`, immutable revision
-`751bff37182d3f1213fa05d7196b954e230abad9` on Hugging Face. Every downloaded and
+[`751bff37182d3f1213fa05d7196b954e230abad9`](https://huggingface.co/Xenova/all-MiniLM-L6-v2/tree/751bff37182d3f1213fa05d7196b954e230abad9) on Hugging Face. Every downloaded and
 loaded input is checked against these SHA-256 digests:
 
 | File | SHA-256 |
@@ -52,3 +52,8 @@ quality. Do not tune ranking to maximize its apparent score. Add held-out,
 independently authored examples when investigating retrieval changes. Existing
 `why-golden` remains available for corpus-specific evaluation; it is not required
 for this public suite.
+
+Existing stored vectors are not automatically migrated when switching embedding
+models. Use a consistent backend per store and validate retrieval on a restored
+copy before changing it; matching vector dimensions alone do not establish model
+compatibility. Lexical retrieval remains available without model inference.
