@@ -10,8 +10,9 @@ release or remote setting change was made; candidate assets remain local.
 
 **NO-GO for public release; GO for PR review and supervised beta evaluation.**
 The reproduced store-isolation defects are fixed, and local product/artifact
-journeys are exercised. Remaining publication gates are exact-commit hosted CI,
-artifact attestations/public download verification, and independent real-client
+journeys are exercised, and the initial PR revision passed hosted CI. Every new
+PR revision still requires its own checks. Remaining publication gates include
+artifact attestations/public download verification and independent real-client
 acceptance. A protocol harness is not evidence that a named vendor client/version
 or an independent developer completed the journey.
 
@@ -88,6 +89,30 @@ The default suite's ignored tests are two model-dependent acceptance cases and
 one manual cosine diagnostic. Only the first two are subsequently executed;
 the manual diagnostic is not counted as passed. Lexical builds do not compile
 unsupported local-model tests and advertise no local-model capability.
+
+## Hosted PR verification
+
+[CI run 37902743944](https://github.com/cogitod/open-why/actions/runs/37902743944)
+passed `leak-check`, `macos-test` and required `build-and-test` for PR #44 head
+`495acafde1ac183c2ce3f658ce518c74fbc5c84e` against main `ac2f19b`. GitHub
+checks the PR merge checkout; later documentation commits require their own run.
+No check was bypassed. The reviewed diff and passing automation are maintainer
+verification, not an independent human review.
+
+| Hosted configuration | Passed | Failed | Ignored |
+|---|---:|---:|---:|
+| macOS 14.8.9 ARM64, Rust 1.99 default | 170 | 0 | 3 |
+| macOS 14.8.9 ARM64, Rust 1.99 lexical | 170 | 0 | 0 |
+| Ubuntu 24.04 x86-64, stable default | 171 | 0 | 3 |
+| Ubuntu 24.04 x86-64, stable lexical | 171 | 0 | 0 |
+| Ubuntu 24.04 x86-64, explicit model cases | 2 | 0 | 0 |
+| Ubuntu 24.04 x86-64, Rust 1.88 default | 171 | 0 | 3 |
+| Ubuntu 24.04 x86-64, Rust 1.88 lexical | 171 | 0 | 0 |
+
+Formatting, release builds, strict Clippy, source-package generation, dependency
+audit and repository-policy regressions passed in that run. The explicit model
+stage passed both previously ignored acceptance cases; the manual debug utility
+remained ignored. This is source-tree CI, not hosted release artifact acceptance.
 
 ## Reproduction commands
 
@@ -166,7 +191,7 @@ reported source commit, host and toolchain are in each candidate's build JSON.
 | Verify | `why verify-backup <candidate>/snapshot.db` | Schema, integrity, foreign keys and sealed evidence pass |
 | Restore | `why restore <candidate>/snapshot.db --to <candidate>/restored.db`; `why get release-smoke` against restored store | Same store identity and synthetic record content preserved |
 | Contribute | Topic commits, staged hooks, shell regressions and Rust matrix | Local checks pass; PR #44 opened with authorization; issues remain drafts |
-| Pass CI | Local CI-equivalent commands and actionlint | Local checks pass; hosted workflow execution remains pending |
+| Pass CI | Local checks and hosted run 37902743944 | Required checks and macOS pass at PR head 495acaf; later revisions require their own run |
 | Install public versioned release | RELEASE.md commands and local archive | Local immutable candidate works; no public beta tag/download exists yet |
 
 ## Final local candidate
@@ -251,9 +276,9 @@ The hosted Linux runner uses x86-64, which this ARM64 container does not certify
 
 ## Not fully verified, blocked, or deferred
 
-- **Implemented but not hosted:** macOS/Linux GitHub workflow matrix, tag/main
-  ancestry gate, artifact attestation and upload. Static validation/local runs
-  cannot certify remote runner permissions or hosted provenance.
+- **Implemented but not hosted:** release tag/main ancestry gate, artifact
+  attestation and upload. The ordinary macOS/Linux CI matrix has executed; this
+  does not certify release-workflow permissions or hosted provenance.
 - **Authorization gate:** PR #44 and hosted CI are authorized. Tags, releases,
   public issues and remote setting changes remain outside this continuation.
   Public immutable-download verification awaits an authorized release. Existing

@@ -20,7 +20,7 @@ stable-release contract in STABILITY.md.
 | Retrieval | Behavioral evidence available | Committed synthetic fixture; lexical and real local-model runs; immutable model revision and verified SHA-256 inputs; no broad accuracy claim |
 | Data maintenance | Tested | Online snapshot, schema/SQLite/digest verification, restore-to-new-path, preserved identity/evidence; live WAL/daemon and refusal tests |
 | Versioning and artifacts | Prepared, unpublished | `0.1.0-beta.1`, changelog, locked source archive, host binary, SBOM, checksums and local build record; remote attestation/download gates remain |
-| CI | Implemented; hosted execution pending | Existing required names retained; macOS failure propagates to required build-and-test; real embedding evaluation explicitly runs; workflow syntax/action pins checked locally |
+| CI | Hosted initial PR run passed | Run 37902743944: required leak-check/build-and-test and macOS pass at 495acaf; Linux stable/MSRV, lexical and real-model cases execute; each later head needs its own checks |
 | Contributions | Ready for outside review | Existing guide/templates/hooks retained; actual feature-matrix commands, scoped issue drafts, separate security/conduct contacts |
 | Independent adoption | Unverified | Real CLI/process harness is tested; no claim of actual Codex/Claude application-version acceptance or an independent human completing first use |
 
