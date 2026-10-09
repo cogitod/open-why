@@ -1,12 +1,13 @@
 use super::catalog::{registry_digest, registry_tools, MCP_CONTRACTS};
 use super::common::{tool_response, ToolError, MAX_RESPONSE_BYTES};
 use super::handlers::dispatch_tool;
+use super::transport::Binding;
 use crate::{db, store::CURRENT_RATIONALE_CONTRACT};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 fn jsonrpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
@@ -35,59 +36,56 @@ fn server_now_epoch() -> i64 {
         .unwrap_or(0)
 }
 
-/// Path to the Unix-domain socket a `why serve-daemon` instance listens on for the store a
-/// plain `why serve` would open. One socket per resolved store, so unrelated stores (and
-/// isolated per-test temp stores) never share a daemon.
-fn daemon_socket_path() -> PathBuf {
-    db::default_path().with_extension("sock")
-}
-
-/// Run as an MCP stdio server for one client. If a `why serve-daemon` is already listening for
-/// this store, this process becomes a thin byte proxy onto it (sharing its loaded embedder and
-/// avoiding a redundant model load); otherwise it serves the request itself, exactly as if no
-/// daemon existed. Never blocks waiting for a daemon that may never appear.
+/// Validate the configured store before selecting direct or daemon transport.
 pub(super) fn serve() -> Result<()> {
-    let socket_path = daemon_socket_path();
-    if let Ok(stream) = UnixStream::connect(&socket_path) {
+    let (binding, lexical) = Binding::configured()?;
+    if let Some(stream) = binding.connect()? {
+        binding.verify(&lexical)?;
         return proxy_stdio(stream);
     }
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    drop(lexical);
     let store = Mutex::new(db::Store::open_default()?);
-    serve_io(&store, stdin.lock(), &mut stdout, server_now_epoch)
+    binding.verify(&store.lock().unwrap())?;
+    serve_io_checked(
+        &store,
+        io::stdin().lock(),
+        &mut io::stdout(),
+        server_now_epoch,
+        Some(&binding),
+    )
 }
 
-/// Run as a long-lived, client-independent MCP server: load the store once and accept any
-/// number of concurrent connections on a Unix-domain socket, each served by `serve_io` exactly
-/// as a direct stdio client would be. Meant to run under a supervisor (e.g. launchd) so its
-/// lifetime never depends on any one MCP client's session.
 pub(super) fn serve_daemon() -> Result<()> {
-    let socket_path = daemon_socket_path();
-    // Best-effort: clear a stale socket file left by a daemon that did not shut down cleanly.
-    // A live daemon still holding this path fails the following bind, which is the desired
-    // "only one daemon" behavior.
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
-    eprintln!(
-        "open-why: serving {} on {}",
-        db::default_path().display(),
-        socket_path.display()
-    );
+    let (binding, lexical) = Binding::configured()?;
+    drop(lexical);
     let store = Arc::new(Mutex::new(db::Store::open_default()?));
+    binding.verify(&store.lock().unwrap())?;
+    let socket_path = binding.socket();
+    // Never unlink an existing endpoint: it may be active, stale, or unrelated data.
+    let listener = UnixListener::bind(&socket_path)?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    eprintln!("open-why: serving on {}", socket_path.display());
     for incoming in listener.incoming() {
-        let Ok(connection) = incoming else { continue };
+        let Ok(mut connection) = incoming else {
+            continue;
+        };
         let store = Arc::clone(&store);
-        std::thread::spawn(move || {
-            let Ok(reader) = connection.try_clone() else {
-                return;
-            };
-            let mut writer = connection;
-            let _ = serve_io(
+        let binding = binding.clone();
+        std::thread::spawn(move || -> Result<()> {
+            binding.verify(
+                &store
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )?;
+            binding.accept(&mut connection)?;
+            let reader = io::BufReader::new(connection.try_clone()?);
+            serve_io_checked(
                 &store,
-                io::BufReader::new(reader),
-                &mut writer,
+                reader,
+                &mut connection,
                 server_now_epoch,
-            );
+                Some(&binding),
+            )
         });
     }
     Ok(())
@@ -110,11 +108,22 @@ fn proxy_stdio(stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn serve_io(
     store: &Mutex<db::Store>,
     reader: impl BufRead,
     writer: &mut impl Write,
     clock: impl Fn() -> i64,
+) -> Result<()> {
+    serve_io_checked(store, reader, writer, clock, None)
+}
+
+fn serve_io_checked(
+    store: &Mutex<db::Store>,
+    reader: impl BufRead,
+    writer: &mut impl Write,
+    clock: impl Fn() -> i64,
+    binding: Option<&Binding>,
 ) -> Result<()> {
     for line in reader.lines() {
         let line = match line {
@@ -138,6 +147,9 @@ pub(super) fn serve_io(
             let store = store
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(binding) = binding {
+                binding.verify(&store)?;
+            }
             handle_message(&store, &message, clock())
         };
         if let Some(response) = response {

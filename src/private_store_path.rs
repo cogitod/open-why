@@ -109,7 +109,7 @@ impl PreparedStorePath {
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
-fn verify_connection_has_not_moved(connection: &rusqlite::Connection) -> Result<()> {
+pub(crate) fn verify_connection_has_not_moved(connection: &rusqlite::Connection) -> Result<()> {
     let mut moved = 0_i32;
     // SAFETY: `connection.handle()` is valid for this call, `main` is a
     // NUL-terminated static database name, and SQLite writes one integer to
@@ -130,7 +130,7 @@ fn verify_connection_has_not_moved(connection: &rusqlite::Connection) -> Result<
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
-fn verify_connection_has_not_moved(_connection: &rusqlite::Connection) -> Result<()> {
+pub(crate) fn verify_connection_has_not_moved(_connection: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 

@@ -123,6 +123,10 @@ pub fn inspect_store(path: &Path) -> Result<StoreCompatibility> {
 }
 
 impl Store {
+    pub(crate) fn verify_file(&self) -> Result<()> {
+        crate::private_store_path::verify_connection_has_not_moved(&self.conn)
+    }
+
     /// Open a store without an embedder (lexical-first). Kept as the explicit no-embedder entry
     /// point; every command path uses `open_default` so the semantic arm is active uniformly.
     #[allow(dead_code)]

@@ -3,6 +3,7 @@ mod catalog;
 mod common;
 mod handlers;
 mod protocol;
+mod transport;
 
 use anyhow::Result;
 
