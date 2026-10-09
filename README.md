@@ -34,6 +34,9 @@ and backup/restore have automated verification. An actual Codex CLI session has
 passed a bounded evidence-read check. Independent human first use and broader
 client coverage remain open; see [readiness and limitations](docs/readiness.md).
 
+Security hardening added after this tag is described in [SECURITY.md](SECURITY.md).
+A follow-up release is pending.
+
 ## Install from source
 
 You need Git, Rust 1.88 or newer, and your platform's native build tools:

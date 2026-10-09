@@ -54,6 +54,15 @@ fn same_basename_remote_repositories_never_share_checkout_or_evidence_scope() {
             ],
         );
         success(&index(&s, owner));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(s.0.join(".cache/open-why"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
     }
     let db = rusqlite::Connection::open(s.0.join("store.db")).unwrap();
     let scopes: Vec<String> = db
@@ -79,9 +88,26 @@ fn same_basename_remote_repositories_never_share_checkout_or_evidence_scope() {
         assert_eq!(count, 1);
         success(&index(&s, owner));
     }
+    // Existing loose caches are tightened on reuse as well as at first creation.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        s.0.join(".cache/open-why"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    success(&index(&s, "alpha"));
     // Even a manually misbound cache directory fails before importing foreign evidence.
     for scope in scopes {
         let path = Path::new(&scope);
+        assert_eq!(
+            std::fs::metadata(s.0.join(".cache/open-why"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
         git(
             &s,
             path,
@@ -180,4 +206,41 @@ fn remote_reindex_reads_updated_decision_files() {
     std::fs::rename(&remote, s.0.join("offline-remote")).unwrap();
     assert!(!index(&s, "alpha").status.success());
     assert_eq!(std::fs::read(s.0.join("store.db")).unwrap(), before);
+}
+
+#[test]
+fn credential_urls_are_rejected_without_echoing_or_caching_them() {
+    let s = Sandbox::new();
+    let marker = "synthetic-credential-sentinel";
+    for url in [
+        format!("https://user:{marker}@fixture.invalid/project.git"),
+        format!("https://{marker}@fixture.invalid/project.git"),
+        format!("https://fixture.invalid/project.git?access={marker}"),
+        format!("ssh://git:{marker}@fixture.invalid/project.git"),
+    ] {
+        let out = s.command().args(["init", &url]).output().unwrap();
+        assert!(!out.status.success());
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(text.contains("use a Git credential helper or SSH agent"));
+        assert!(!text.contains(marker));
+        assert!(!String::from_utf8_lossy(&out.stdout).contains(marker));
+        assert!(!s.0.join(".cache/open-why/repos").exists());
+    }
+}
+
+#[test]
+fn symlinked_repository_cache_is_rejected_without_changing_target_permissions() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let s = Sandbox::new();
+    let outside = s.0.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir(s.0.join(".cache")).unwrap();
+    symlink(&outside, s.0.join(".cache/open-why")).unwrap();
+    assert!(!index(&s, "alpha").status.success());
+    assert_eq!(
+        std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
 }

@@ -71,7 +71,8 @@ for f in "${files[@]:-}"; do
   for pat in "${secret_patterns[@]}"; do
     if hits=$(read_path "$f" | grep -EnI "$pat" 2>/dev/null); then
       echo "[leak-check] possible secret in $f:"
-      echo "$hits" | sed 's/^/    /'
+      # Never copy a credential into public CI logs while reporting it.
+      echo "$hits" | cut -d: -f1 | sed 's/^/    line /'
       problems=$((problems + 1))
     fi
   done
@@ -129,7 +130,7 @@ for f in "${files[@]:-}"; do
       || true)
     if [[ -n "$hits" ]]; then
       echo "[leak-check] private implementation provenance in $f:"
-      echo "$hits" | sed 's/^/    /'
+      echo "$hits" | cut -d: -f1 | sed 's/^/    line /'
       problems=$((problems + 1))
     fi
   done

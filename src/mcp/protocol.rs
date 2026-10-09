@@ -1,11 +1,13 @@
 use super::catalog::{registry_digest, registry_tools, MCP_CONTRACTS};
-use super::common::{tool_response, ToolError, MAX_RESPONSE_BYTES};
+use super::common::{
+    tool_response, ToolError, MAX_ID_BYTES, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+};
 use super::handlers::dispatch_tool;
 use super::transport::Binding;
 use crate::{db, store::CURRENT_RATIONALE_CONTRACT};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
@@ -121,20 +123,36 @@ pub(super) fn serve_io(
 
 fn serve_io_checked(
     store: &Mutex<db::Store>,
-    reader: impl BufRead,
+    mut reader: impl BufRead,
     writer: &mut impl Write,
     clock: impl Fn() -> i64,
     binding: Option<&Binding>,
 ) -> Result<()> {
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => break,
-        };
-        if line.trim().is_empty() {
+    loop {
+        // Bound allocation before parsing, including unterminated frames. Closing
+        // this session avoids draining an attacker-controlled, possibly endless line.
+        let mut line = Vec::new();
+        let size = (&mut reader)
+            .take((MAX_REQUEST_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line)?;
+        if size == 0 {
+            break;
+        }
+        if size > MAX_REQUEST_BYTES {
+            write_resp(
+                writer,
+                &jsonrpc_error(
+                    Value::Null,
+                    -32600,
+                    "request exceeds the 8 MiB wire byte limit; connection closed",
+                ),
+            )?;
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let message: Value = match serde_json::from_str(&line) {
+        let message: Value = match serde_json::from_slice(&line) {
             Ok(message) => message,
             Err(error) => {
                 write_resp(
@@ -162,6 +180,15 @@ fn serve_io_checked(
 
 fn handle_message(store: &db::Store, message: &Value, as_of: i64) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
+    if !matches!(&id, Value::Null | Value::Number(_))
+        && !matches!(&id, Value::String(value) if value.len() <= MAX_ID_BYTES)
+    {
+        return Some(jsonrpc_error(
+            Value::Null,
+            -32600,
+            "id must be null, a number, or a string of at most 512 UTF-8 bytes",
+        ));
+    }
     let Some(object) = message.as_object() else {
         return Some(jsonrpc_error(id, -32600, "request must be a JSON object"));
     };

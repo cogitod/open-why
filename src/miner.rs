@@ -32,14 +32,52 @@ fn looks_like_url(r: &str) -> bool {
         || r.starts_with("ssh://")
 }
 
+fn validate_clone_url(url: &str) -> Result<()> {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let userinfo = authority.rsplit_once('@').map(|(user, _)| user);
+        anyhow::ensure!(
+            !rest.contains(['?', '#'])
+                && !userinfo.is_some_and(|user| scheme != "ssh" || user.contains(':')),
+            "repository URLs must not contain credentials, query strings, or fragments; use a Git credential helper or SSH agent"
+        );
+    }
+    Ok(())
+}
+
+fn private_repo_cache() -> Result<PathBuf> {
+    let root = cache_dir();
+    #[cfg(unix)]
+    {
+        use rustix::fs::{open, Mode, OFlags};
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&root)?;
+        // Tighten legacy caches through an opened directory, never a symlink target.
+        // A private home directory remains part of the local-user trust boundary.
+        let directory = std::fs::File::from(open(
+            &root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    anyhow::bail!("private repository caches require Unix directory permissions");
+    Ok(root.join("repos"))
+}
+
 fn clone_repo(url: &str) -> Result<PathBuf> {
+    validate_clone_url(url)?;
     // Full URL identity prevents unrelated owners/hosts with the same basename
     // from sharing a checkout, and avoids exposing URL credentials in path names.
     let key: String = Sha256::digest(url.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let dest = cache_dir().join("repos").join(key);
+    let dest = private_repo_cache()?.join(key);
     if dest.join(".git").exists() {
         let origin = git(&dest, &["config", "--get", "remote.origin.url"])?;
         anyhow::ensure!(
@@ -61,10 +99,12 @@ fn clone_repo(url: &str) -> Result<PathBuf> {
         .args(["--depth", "200"])
         .arg(url)
         .arg(&dest)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
-        .with_context(|| format!("failed to clone {url}"))?;
+        .context("failed to run git clone")?;
     if !status.success() {
-        bail!("git clone failed for {url}");
+        bail!("git clone failed ({status}); check the remote and Git credentials");
     }
     Ok(dest)
 }
@@ -184,6 +224,13 @@ mod tests {
         assert!(looks_like_url("https://github.com/foo/bar"));
         assert!(looks_like_url("git@github.com:foo/bar.git"));
         assert!(looks_like_url("ssh://git@host/repo.git"));
+        for url in [
+            "https://host/repo.git",
+            "ssh://git@host/repo.git",
+            "git@host:repo.git",
+        ] {
+            validate_clone_url(url).unwrap();
+        }
         assert!(!looks_like_url("/local/path"));
         assert!(!looks_like_url("relative/path"));
     }

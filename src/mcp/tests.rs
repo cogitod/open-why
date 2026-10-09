@@ -727,3 +727,51 @@ fn exact_commit_links_validate_bounds_and_fail_closed_on_oversize() {
     assert_eq!(oversized.payload["code"], "response_too_large");
     assert!(oversized.payload.get("content").is_none());
 }
+
+#[test]
+fn oversized_mcp_frame_stops_before_parsing_or_reading_the_rest() {
+    // Keep this independent of the implementation constant: this is the wire limit.
+    const LIMIT: usize = 8 * 1024 * 1024;
+    let store = std::sync::Mutex::new(temp_store());
+    let mut input = std::io::Cursor::new(vec![b' '; LIMIT * 2]);
+    let mut output = Vec::new();
+    serve_io(&store, &mut input, &mut output, || 0).unwrap();
+    assert_eq!(input.position(), (LIMIT + 1) as u64);
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["error"]["code"], -32600);
+    assert_eq!(response["id"], Value::Null);
+    assert!(output.len() < 256);
+
+    // A legal frame at the exact limit (including LF) and a final frame without
+    // LF remain valid. Invalid UTF-8 cannot conceal the next request.
+    let ping = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
+    let mut boundary = vec![b' '; LIMIT - ping.len() - 1];
+    boundary.extend_from_slice(ping);
+    boundary.extend_from_slice(b"\n\xff\n");
+    boundary.extend_from_slice(ping);
+    output.clear();
+    serve_io(&store, boundary.as_slice(), &mut output, || 0).unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0]["result"], json!({}));
+    assert_eq!(replies[1]["error"]["code"], -32700);
+    assert_eq!(replies[2]["result"], json!({}));
+}
+
+#[test]
+fn invalid_request_ids_are_not_reflected_into_errors() {
+    let store = std::sync::Mutex::new(temp_store());
+    for id in [json!("x".repeat(513)), json!({"unexpected": "object"})] {
+        let input = json!({"jsonrpc":"2.0", "method":"ping", "id":id}).to_string();
+        let mut output = Vec::new();
+        serve_io(&store, input.as_bytes(), &mut output, || 0).unwrap();
+        let response: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(response["id"], Value::Null);
+        assert_eq!(response["error"]["code"], -32600);
+        assert!(output.len() < 256);
+    }
+}

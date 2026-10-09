@@ -148,4 +148,8 @@ Passing ordinary CI does not establish a stable release. Follow the
 report any unmet gate. Stable release notes must state supported operating
 systems, MSRV, contract versions, migration range, and the evidence run.
 
+CI also runs Gitleaks 8.30.1 against Git history, with a pinned download checksum
+and redacted output. The local leak hook remains offline. Never waive a detected
+credential to make CI pass: revoke it and follow the private reporting process.
+
 Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
