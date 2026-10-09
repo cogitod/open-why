@@ -22,26 +22,37 @@ An open-source project by [Cogito](https://cogito.cv). Apache-2.0.
 
 ## Install from source
 
-You need Git, Rust 1.88 or newer, and the native build tools for your operating
-system. This is a pre-1.0 project. Linux is the only platform continuously
-verified by CI; macOS is not yet a supported platform under the
-[stability contract](STABILITY.md).
+You need Git, Rust 1.88 or newer, and your platform's native build tools.
+`0.1.0-beta.1` is an **unreleased candidate**. From a reviewed checkout of this
+candidate, install the lexical build:
 
 ```bash
-cargo install --locked --git https://github.com/cogitod/open-why --bin why
+cargo install --locked --path . --bin why --no-default-features
 why --version
 ```
 
-This installs the current `main` revision from source, using its committed
-lockfile. There are no prebuilt binaries in this installation path. To upgrade,
-repeat the install command with `--force`. To remove the executable, run
-`cargo uninstall open-why`; your database and model cache remain on disk.
+This uses the checkout's committed lockfile. For version-specific source archive,
+tag and full-commit installation, see [release instructions](RELEASE.md). No beta
+tag or public binary is claimed to exist yet; do not use a moving-main install
+for reproducibility. Candidate artifacts must pass their install tests before
+publication. To remove the executable, run `cargo uninstall open-why`; your data
+and model cache remain on disk.
+
+Linux CI already exists. This candidate adds macOS CI; local macOS verification
+alone does not establish continuous platform support. See
+[readiness](OSS_READINESS.md) and [stability expectations](STABILITY.md).
 
 Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on your `PATH`.
-Building downloads ONNX Runtime even when you intend to use lexical search;
-see [build troubleshooting](CONTRIBUTING.md#local-setup) for
-`ORT_LIB_LOCATION` when the download is unavailable. Normal lexical retrieval
-requires no embedding model or API key.
+The recommended lexical install uses `--no-default-features`, so it does not
+build or download ONNX Runtime or tokenizers. Remote embeddings remain available
+when explicitly configured. Cargo's default `local-embeddings` feature preserves
+existing builds: omit that flag to include on-device inference, then run
+`why fetch-model`. Model inputs are pinned and digest-verified; see the
+[public evaluation](docs/public-evaluation.md). Local model settings on a lexical
+build fail explicitly. A cached model is not loaded by that build.
+
+See [backup and recovery](docs/maintenance.md) before using a store for important
+records. A beta is not the stronger stability guarantee described in STABILITY.md.
 
 ## Set up your coding agent
 

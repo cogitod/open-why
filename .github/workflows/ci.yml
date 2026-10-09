@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -37,9 +38,31 @@ jobs:
       - name: Test Rust file-size enforcement
         run: bash tests/check-rust-loc.sh
 
+  macos-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # pinned
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --release --locked
+      - run: cargo clippy --release --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo test --locked --no-default-features
+
   build-and-test:
+    needs: macos-test
+    if: always()
     runs-on: ubuntu-24.04
     steps:
+      - name: Require macOS tests (do not treat a skipped dependency as success)
+        env:
+          MACOS_RESULT: ${{ needs.macos-test.result }}
+        run: test "$MACOS_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -80,6 +103,15 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Lexical-only build and tests
+        run: |
+          cargo build --release --locked --no-default-features
+          cargo clippy --release --all-targets --locked --no-default-features -- -D warnings
+          cargo test --locked --no-default-features
+
+      - name: Execute pinned local embedding evaluation
+        run: bash scripts/evaluate-local.sh
+
       - name: Install minimum supported Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, pinned 2026-09-07
         with:
@@ -97,3 +129,6 @@ jobs:
 
       - name: Test (Rust 1.88)
         run: cargo test --locked
+
+      - name: Lexical-only tests (Rust 1.88)
+        run: cargo test --locked --no-default-features

@@ -44,10 +44,9 @@ public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported
-to the maintainers by opening a confidential report via [GitHub's private
-vulnerability reporting](https://github.com/cogitod/open-why/security/advisories/new)
-or, if that doesn't fit, by contacting a maintainer directly. All complaints will be
-reviewed and investigated promptly and fairly.
+privately to [foundry@cogito.cv](mailto:foundry@cogito.cv).
+All complaints will be reviewed and investigated promptly and fairly. Security vulnerabilities use the
+separate reporting channel in [SECURITY.md](SECURITY.md).
 
 ## Attribution
 

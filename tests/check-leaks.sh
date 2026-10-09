@@ -51,3 +51,28 @@ printf '/%s/private/project\n' 'Users' > "$fixture_repo/provenance.txt"
 )
 
 echo "[leak-check-test] exact staged index authority verified"
+
+# A reviewed public contact is allowed only as the exact conduct-policy line.
+contact='foundry@cogi''to.cv'
+printf 'privately to [%s](mailto:%s).\n' "$contact" "$contact" > "$fixture_repo/CODE_OF_CONDUCT.md"
+git -C "$fixture_repo" add CODE_OF_CONDUCT.md
+(cd "$fixture_repo" && bash hooks/check-leaks.sh staged)
+printf 'privately to [%s](mailto:%s). private downstream context\n' "$contact" "$contact" > "$fixture_repo/CODE_OF_CONDUCT.md"
+git -C "$fixture_repo" add CODE_OF_CONDUCT.md
+if (cd "$fixture_repo" && bash hooks/check-leaks.sh staged >/dev/null 2>&1); then
+  echo 'expected extra contact-line provenance to be rejected' >&2
+  exit 1
+fi
+printf 'privately to [%s](mailto:%s).\n' "$contact" "$contact" > "$fixture_repo/CODE_OF_CONDUCT.md"
+git -C "$fixture_repo" add CODE_OF_CONDUCT.md
+publisher='cogi''tod/open-why'
+printf '  --repo %s \\\n  --signer-workflow %s/.github/workflows/release-candidate.yml\n' "$publisher" "$publisher" > "$fixture_repo/RELEASE.md"
+git -C "$fixture_repo" add RELEASE.md
+(cd "$fixture_repo" && bash hooks/check-leaks.sh staged)
+printf '  --repo %s private downstream context\n' "$publisher" >> "$fixture_repo/RELEASE.md"
+git -C "$fixture_repo" add RELEASE.md
+if (cd "$fixture_repo" && bash hooks/check-leaks.sh staged >/dev/null 2>&1); then
+  echo 'expected extra release-line provenance to be rejected' >&2
+  exit 1
+fi
+echo '[leak-check-test] narrow public-contact and release-publisher exceptions verified'

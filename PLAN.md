@@ -33,7 +33,7 @@ They must not copy open-why's storage, ranking, supersession, or evidence logic.
 2. **Temporal identity.** A superseding record retires its predecessor without
    deleting history. Current reads resolve to an active record or fail closed.
 3. **Evidence-bound recall.** Answers include record identity and available
-   source, author, date, and Git proof.
+   source, author, date, and Git references.
 4. **Hybrid retrieval.** Lexical and semantic candidates are fused with stable,
    regression-tested weights and a relevance gate.
 5. **Capture provenance.** `content_digest` and `source_identity` make repeated
@@ -62,4 +62,4 @@ an open-why feature.
 
 ## Positioning
 
-> Other memory systems remember what. open-why remembers why, with the proof.
+> open-why retrieves recorded rationale with inspectable source evidence.
