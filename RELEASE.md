@@ -1,9 +1,10 @@
 # Beta releases and upgrades
 
-[`v0.1.0-beta.1`](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1)
-is a published prerelease. Its signed tag identifies reviewed commit
-`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`. Public beta is a usability milestone;
-it does not imply the stable guarantees in STABILITY.md.
+The current release target is `v0.1.0-beta.2`. A tag alone is not a published
+release: use the [release page](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.2)
+for availability, the reviewed source commit and completed artifact-validation
+evidence. Public beta is a usability milestone; it does not imply the stable
+guarantees in STABILITY.md.
 
 ## Version policy
 
@@ -34,7 +35,7 @@ python3 scripts/prepare-release.py /absolute/new/candidate-directory
 The script refuses a dirty tree, packages the locked source, extracts it into a
 fresh directory, installs from that archive, and exercises that installed binary:
 version, isolated demo, index, capture, retrieval, MCP initialize, backup,
-verification, restore and exact evidence read. It produces a source `.crate`, a
+verification, restore, exact evidence read and credential rejection without persistence. It produces a source `.crate`, a
 host-specific lexical binary archive with resolved Cargo dependency license texts,
 platform-named SHA256SUMS, a dependency SBOM and an
 unsigned build record containing the source commit, features and toolchain.
@@ -61,7 +62,7 @@ These steps require maintainer authorization; they are not part of local work.
 1. Merge a reviewed PR through the required `leak-check` and `build-and-test`
    checks. The latter explicitly fails if macOS checks fail or are cancelled.
 2. Confirm CHANGELOG.md, version and Cargo.lock match. Create a signed annotated
-   `v0.1.0-beta.1` tag at the reviewed main commit and push it only after approval.
+   `v0.1.0-beta.2` tag at the reviewed main commit and push it only after approval.
 3. Manually dispatch **Validate release candidate** on that tag. It reruns CI,
    verifies tag/version equality and main ancestry, builds and exercises packaged
    artifacts on Linux/macOS, generates GitHub provenance attestations over final
@@ -82,12 +83,15 @@ These steps require maintainer authorization; they are not part of local work.
 Download the platform manifest and all files it references into one directory.
 The source `.crate` is shared by both platforms. Example for Apple Silicon:
 
+Set `RELEASE_COMMIT` to the full reviewed commit recorded in the release notes
+and verify the signed tag against a trusted maintainer signing key.
+
 ```bash
 shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin
-gh attestation verify open-why-0.1.0-beta.1-aarch64-apple-darwin-lexical.tar.gz \
+gh attestation verify open-why-0.1.0-beta.2-aarch64-apple-darwin-lexical.tar.gz \
   --repo cogitod/open-why \
-  --source-digest ffb32f6a9a9187df69ee812ea9a38a1014e4aea6 \
-  --source-ref refs/tags/v0.1.0-beta.1 --deny-self-hosted-runners \
+  --source-digest "$RELEASE_COMMIT" \
+  --source-ref refs/tags/v0.1.0-beta.2 --deny-self-hosted-runners \
   --signer-workflow cogitod/open-why/.github/workflows/release-candidate.yml
 ```
 
@@ -101,8 +105,8 @@ A source archive contains its Cargo.lock and `.cargo_vcs_info.json`. Verify its
 checksum and provenance before extracting and installing:
 
 ```bash
-tar -xzf open-why-0.1.0-beta.1.crate
-cargo install --locked --path open-why-0.1.0-beta.1 --bin why --no-default-features
+tar -xzf open-why-0.1.0-beta.2.crate
+cargo install --locked --path open-why-0.1.0-beta.2 --bin why --no-default-features
 why --version
 ```
 
@@ -110,7 +114,7 @@ Install the published source tag:
 
 ```bash
 cargo install --locked --git https://github.com/cogitod/open-why \
-  --tag v0.1.0-beta.1 --bin why --no-default-features
+  --tag v0.1.0-beta.2 --bin why --no-default-features
 ```
 
 For immutable source identity, use `--rev <full-reviewed-40-character-commit>`
@@ -123,3 +127,12 @@ and place it in a directory on PATH. Check `why --version` before reconnecting.
 Before adding `--force` to upgrade an existing installation, follow
 [backup and recovery](docs/maintenance.md). Keep the previous executable and a
 verified pre-upgrade snapshot until the restored-copy trial succeeds.
+
+### Upgrading from beta.1 to beta.2
+
+No schema migration or identity reset is required. Stop existing `why daemon`
+processes before replacing the executable, then reconnect MCP clients. Remote
+URL indexing now requires explicit `OPEN_WHY_ALLOW_REMOTE_CLONE=1`; prefer a local
+checkout. New ingestion rejects recognizable credentials rather than redacting
+records. Existing stores, clones and backups are not scanned or scrubbed by an
+upgrade. See the [data policy](SECURITY.md#data-ingestion-policy-after-beta1).

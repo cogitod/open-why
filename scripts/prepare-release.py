@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -103,6 +104,21 @@ require("Synthetic artifact validation" in output(str(binary), "get", "release-s
 request = json.dumps({"jsonrpc":"2.0", "id":1, "method":"initialize"}) + "\n"
 response = run(str(binary), "serve", input=request, stdout=subprocess.PIPE, env=env)
 require(json.loads(response.stdout)["result"]["serverInfo"]["version"] == version, "artifact MCP version mismatch")
+# A source-level guard is insufficient if a stale or incorrectly built binary ships.
+marker = "gh" + "p_" + "Z" * 36  # Synthetic, never a usable credential.
+rejected = subprocess.run([str(binary), "capture", "--id", "rejected-credential",
+    "--title", "Synthetic credential refusal", "--content", marker],
+    text=True, capture_output=True, env=env)
+require(rejected.returncode != 0 and "sensitive-data policy" in rejected.stderr,
+        "artifact did not reject credential ingestion")
+require(marker not in rejected.stdout + rejected.stderr, "artifact echoed rejected input")
+with sqlite3.connect(env["OPEN_WHY_DB"]) as connection:
+    require(all(marker not in line for line in connection.iterdump()),
+            "rejected credential persisted in restored store")
+for suffix in ["", "-wal"]:
+    store_file = Path(env["OPEN_WHY_DB"] + suffix)
+    require(not store_file.exists() or marker.encode() not in store_file.read_bytes(),
+            "rejected credential persisted in SQLite pages")
 # List locked dependencies without leaking local filesystem paths into artifacts.
 components = [{"type":"library", "name":p["name"], "version":p["version"],
                "licenses":[{"expression":p["license"]}] if p.get("license") else []}
@@ -112,7 +128,7 @@ components = [{"type":"library", "name":p["name"], "version":p["version"],
     "components":components}, indent=2) + "\n")
 (assets / ("build-" + host + ".json")).write_text(json.dumps({"version":version, "revision":revision, "host":host,
     "features":[], "rustc":output("rustc","--version"), "cargo":output("cargo","--version"),
-    "source_archive":archive.name, "artifact_tests":"install, version, demo, index, capture, search, MCP initialize, backup, verify, restore, get",
+    "source_archive":archive.name, "artifact_tests":"install, version, demo, index, capture, search, MCP initialize, backup, verify, restore, get, credential rejection and non-persistence",
     "provenance":"local unsigned build record; not an attestation",
     "sbom_scope":"Cargo lexical resolution (includes development/build dependencies); OS libraries excluded"}, indent=2) + "\n")
 lines = [hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name for p in sorted(assets.iterdir())]

@@ -3,7 +3,7 @@
 Every release entry records user-visible changes, upgrade implications and known
 limits. Unreleased entries are not evidence that artifacts are publicly available.
 
-## Unreleased
+## 0.1.0-beta.2 — 2026-10-09
 
 - Reject recognizable credentials at library, CLI, and MCP ingestion boundaries
   before writes or embedding calls. Entire batches fail atomically; records are
@@ -14,6 +14,15 @@ limits. Unreleased entries are not evidence that artifacts are publicly availabl
 - Bound MCP frames and request IDs, redact leak-scanner findings, protect Git
   caches with owner-only permissions, and reject credential-bearing clone URLs.
   Required CI now includes checksum-pinned Gitleaks history scanning.
+
+- Consolidate onboarding and reference documentation, with a single prioritized
+  contributor roadmap.
+
+Upgrade: back up and verify the store, stop existing daemons, install beta.2 and
+reconnect clients. Store schema, named contracts and Rust MSRV 1.88 are unchanged.
+Previously accepted credential-shaped inputs now fail explicitly. Old stores,
+backups and clones are not scrubbed; inspect and rotate exposed credentials
+separately. Confidential prose and unrecognized secrets can still be stored.
 
 ## 0.1.0-beta.1 — 2026-10-09
 
