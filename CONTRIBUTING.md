@@ -2,7 +2,8 @@
 
 Issues and focused PRs are welcome. Useful first contributions include a
 reproducible bug, an onboarding improvement, or a regression test for a reported
-problem. For a new capability or contract change, open an issue describing the
+problem. See [scoped contributor tasks](docs/contributor-tasks.md) for work requiring no
+internal context. For a new capability or contract change, open an issue describing the
 user's problem before investing in a large implementation.
 
 ## Local setup
@@ -24,13 +25,26 @@ cargo build --release --locked
 Run the development binary with `cargo run --locked --bin why -- --help`. To
 install your checkout, use `cargo install --locked --path . --bin why`.
 
-The build fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` through the
-`ort` crate, even for lexical search. If that download is unavailable, point
+Add `--no-default-features` for a lexical build without ONNX or tokenizers.
+The default build retains local embeddings for compatibility and fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` through the
+`ort` crate, when the local-embeddings feature is enabled. If that download is unavailable, point
 `ORT_LIB_LOCATION` at a compatible pre-installed ONNX Runtime:
 
 ```bash
 ORT_LIB_LOCATION=/path/to/onnxruntime cargo build --release --locked
 ```
+
+The prebuilt ONNX runtime also needs a compatible native C++ runtime. A clean
+Debian 12 ARM64 / GCC 12 build of the default feature set failed linking
+`std::__cxx11::basic_string::_M_replace_cold`. The lexical build and tests work
+there; use `--no-default-features`, or a newer supported build environment for
+local embeddings. Do not assume installing Rust alone provides ONNX's native
+runtime requirements. On Ubuntu 24.04 ARM64 containers, ONNX can emit
+`onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0`
+before the application starts. Inference still executes. Tests explicitly allow
+one exact copy of this vendor prefix on ARM64 Linux default builds; all unknown
+messages, application redaction checks and diagnostic limits remain enforced.
+The executable does not suppress it. Lexical builds do not link ONNX or emit it.
 
 ### Enable local checks
 
@@ -68,6 +82,10 @@ cargo build --release --locked
 cargo clippy --release --all-targets --locked -- -D warnings
 cargo test --locked
 ```
+
+Also run `cargo test --locked --no-default-features` and, for embedding changes,
+`bash scripts/evaluate-local.sh` (downloads verified model inputs and executes
+real inference). See [public evaluation](docs/public-evaluation.md).
 
 For onboarding changes, `cargo test --locked --test onboarding` exercises setup,
 diagnostics, generated configuration, and the walkthrough with isolated stores.

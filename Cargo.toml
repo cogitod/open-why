@@ -1,6 +1,6 @@
 [package]
 name = "open-why"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Record and retrieve why code decisions were made, with source evidence and history."
@@ -11,15 +11,19 @@ documentation = "https://github.com/cogitod/open-why/blob/main/docs/integrations
 keywords = ["mcp", "ai", "decision", "git", "retrieval"]
 categories = ["command-line-utilities", "database", "development-tools"]
 
+[features]
+default = ["local-embeddings"]
+local-embeddings = ["dep:ort", "dep:tokenizers"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"], optional = true }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-tokenizers = "0.23"
+tokenizers = { version = "0.23", optional = true }
 ureq = "3.4.0"
 
 [target.'cfg(unix)'.dependencies]

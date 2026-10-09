@@ -1,5 +1,6 @@
 //! End-to-end MCP contract tests against the real `why serve` process.
 
+mod runtime_support;
 use open_why::{ExternalDecision, GitRef, Store};
 use rusqlite::Connection;
 use serde_json::{json, Value};

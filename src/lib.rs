@@ -51,7 +51,9 @@ pub mod store;
 
 // Convenience re-exports for the library surface.
 pub use db::{default_path, inspect_store, RankExplanation, Store};
-pub use embed::{cosine, from_env, Embedder, HttpEmbedder, LocalEmbedder};
+#[cfg(feature = "local-embeddings")]
+pub use embed::LocalEmbedder;
+pub use embed::{cosine, from_env, Embedder, HttpEmbedder};
 pub use store::{
     CommitLinkItem, CommitLinksErrorCode, CommitLinksResolution, CurrentRecordErrorCode,
     CurrentRecordResolution, Decision, EvidenceIdentity, EvidenceIdentityErrorCode,

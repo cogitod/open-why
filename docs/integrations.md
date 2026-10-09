@@ -179,3 +179,22 @@ The existing `Store::link_git` method is retained only as a trusted, unscoped
 compatibility API. New scoped integrations should not call it. The MCP server keeps
 the existing `open-why_link` schema and success payload, but delegates its write to
 the scoped method.
+
+
+## Beta client verification scope
+
+The repository's process harness runs MCP protocol `2024-11-05` against the real
+CLI, including direct stdio and shared Unix-daemon paths. Onboarding tests parse
+the generated Codex TOML, Claude Code JSON and generic command/args/env formats
+and launch those commands. They do not launch the actual vendor clients.
+
+No particular Codex or Claude Code application version is certified by this beta
+work. Independent acceptance must record the actual client version, platform,
+release checksum, setup, first evidence read, missing evidence, supersession and
+reconnection results before adding it to a tested-client list. A configuration
+snippet is not evidence of end-to-end client interoperability.
+
+Only local stdio and the local Unix daemon are provided; there is no HTTP/SSE
+server, multi-user authentication service or Windows transport. Scopes are
+explicit retrieval boundaries, not an authorization system for untrusted OS
+users. Keep a store and its socket private to the account running the client.

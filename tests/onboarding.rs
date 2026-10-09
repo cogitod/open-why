@@ -177,7 +177,14 @@ fn doctor_does_not_create_missing_paths_or_contact_configured_endpoint() {
         .env("OPEN_WHY_EMBED_MODEL_PATH", sandbox.0.join("absent-model"))
         .output()
         .unwrap();
-    failure(&output, "model is missing");
+    failure(
+        &output,
+        if cfg!(feature = "local-embeddings") {
+            "model is missing"
+        } else {
+            "local-embeddings Cargo feature"
+        },
+    );
     assert_eq!(snapshot(&sandbox.0), before);
 }
 

@@ -4,6 +4,7 @@ use open_why::{
     answer, db, embed, mcp, miner, store, CurrentRecordResolution, RankExplanation, Record,
 };
 
+mod maintenance;
 mod onboarding;
 
 /// Ask why a decision was made, with its evidence.
@@ -32,6 +33,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a consistent backup at a new path, including committed WAL data
+    Backup {
+        #[arg(long)]
+        to: std::path::PathBuf,
+    },
+    /// Verify an existing snapshot without migration or embedding services
+    VerifyBackup { file: std::path::PathBuf },
+    /// Restore a verified snapshot to a NEW path; existing data is never overwritten
+    Restore {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        to: std::path::PathBuf,
+    },
     /// Create or inspect a store and print ready-to-copy MCP configuration
     Setup {
         /// Absolute database path; existing stores retain their identity
@@ -147,6 +161,9 @@ fn main() -> Result<()> {
     match cli.command {
         None => ask_bare(&cli),
         Some(cmd) => match cmd {
+            Command::Backup { to } => maintenance::backup(&to),
+            Command::VerifyBackup { file } => maintenance::verify(&file),
+            Command::Restore { file, to } => maintenance::restore(&file, &to),
             Command::Setup { db, client } => onboarding::setup(&db, client),
             Command::Doctor { db, repo } => onboarding::doctor(db.as_deref(), repo.as_deref()),
             Command::Init { repo } => {

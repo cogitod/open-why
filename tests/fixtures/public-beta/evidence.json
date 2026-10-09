@@ -1,0 +1,9 @@
+[
+  {"id":"sqlite","kind":"decision","title":"Notebook storage: SQLite","content":"SQLite keeps the notebook available offline without a database service. Use a single writer.","scope":"notebook","date":"2025-01-01T00:00:00Z","source":"synthetic-public-fixture"},
+  {"id":"obsolete-cache","kind":"decision","title":"Cache expiry policy","content":"Cache entries expire after one day.","scope":"notebook","date":"2025-01-01T00:00:00Z","valid_until":"2025-02-01T00:00:00Z","superseded_by":"current-cache","source":"synthetic-public-fixture"},
+  {"id":"current-cache","kind":"decision","title":"Cache expiry policy","content":"Cache entries expire after one hour because readers observed stale values.","scope":"notebook","date":"2025-02-01T00:00:00Z","valid_from":"2025-02-01T00:00:00Z","source":"synthetic-public-fixture"},
+  {"id":"expired-trial","kind":"fact","title":"Temporary tracing experiment","content":"Enable verbose tracing during the temporary experiment only.","scope":"notebook","date":"2025-01-01T00:00:00Z","valid_until":"2025-02-01T00:00:00Z","source":"synthetic-public-fixture"},
+  {"id":"team-a","kind":"observation","title":"Compression recommendation","content":"Team A recommends enabling compression to reduce transfer bytes.","scope":"notebook","date":"2025-02-01T00:00:00Z","source":"synthetic-public-fixture"},
+  {"id":"team-b","kind":"observation","title":"Compression recommendation","content":"Team B recommends disabling compression to reduce CPU usage. This disagreement is unresolved.","scope":"notebook","date":"2025-02-01T00:00:00Z","source":"synthetic-public-fixture"},
+  {"id":"foreign","kind":"decision","title":"SQLite for the private service","content":"SQLite configuration from a different scope must not appear in notebook retrieval.","scope":"other-project","date":"2025-02-01T00:00:00Z","source":"synthetic-public-fixture"}
+]

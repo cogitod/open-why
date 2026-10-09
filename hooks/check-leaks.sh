@@ -115,6 +115,14 @@ for f in "${files[@]:-}"; do
     if [[ "$f" == "README.md" && "$pat" == 'cogi''to' ]]; then
       hits=$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:An open-source project by \[Cogi''to\]\(https://cogi''to\.cv\)\. Apache-2\.0\.$' || true)
     fi
+    # Explicit public conduct contact and release-verification publisher names.
+    # Restrict each exception to its documented path and whole line.
+    if [[ "$f" == "CODE_OF_CONDUCT.md" && "$pat" == 'cogi''to' ]]; then
+      hits=$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:privately to \[foundry@cogi''to\.cv\]\(mailto:foundry@cogi''to\.cv\)\.$' || true)
+    fi
+    if [[ "$f" == "RELEASE.md" && "$pat" == 'cogi''to' ]]; then
+      hits=$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:  --(repo cogi''tod/open-why \\|signer-workflow cogi''tod/open-why/\.github/workflows/release-candidate\.yml)$' || true)
+    fi
     # These exact strings are public publisher identity, not private implementation provenance.
     hits=$(printf '%s\n' "$hits" \
       | grep -vE 'github\.com/cogitod/open-why|github/license/cogitod/open-why|Copyright 2026 Cogito Agency' \

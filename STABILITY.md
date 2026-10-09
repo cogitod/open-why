@@ -20,7 +20,9 @@ Rust toolchain.
 
 The implementation contains Unix-specific path protections for Linux, macOS, and
 Android, but macOS and Android are not continuously tested and therefore are not
-currently supported platforms under this contract. Windows and other Unix
+currently supported platforms under this contract. The beta candidate adds a
+macOS job; support is not promoted until that job has run successfully on the
+reviewed release commit. See OSS_READINESS.md for local evidence. Windows and other Unix
 targets are also unsupported. Adding a platform to the supported set requires a
 CI job that runs the full applicable evidence matrix on it.
 

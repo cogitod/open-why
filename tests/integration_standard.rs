@@ -80,6 +80,9 @@ fn probe_manifest(protocol_version: &str) -> (PathBuf, Value) {
         "integration-probe-{}-{protocol_version}.json",
         std::process::id()
     ));
+    // CARGO_TARGET_DIR may point outside the checkout; do not rely on Cargo
+    // or another parallel test to create this fixture directory.
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     (path, value)
 }

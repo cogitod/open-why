@@ -34,7 +34,7 @@ fn fresh_nested_relative_store_path_starts_privately() {
     initialize(&mut server, 1);
     let ping = server.request(json!({"jsonrpc":"2.0","id":3,"method":"ping","params":{}}));
     assert_eq!(ping, json!({"jsonrpc":"2.0","id":3,"result":{}}));
-    assert!(server.finish().is_empty());
+    assert!(runtime_support::application_diagnostics(&server.finish()).is_empty());
 
     let absolute_path = root.join(relative_path);
     let mode =
@@ -260,7 +260,7 @@ fn repeated_feedback_is_durable_atomic_and_redacts_backend_errors() {
     let diagnostics = failing.finish();
     assert!(diagnostics.contains("sensitive sqlite feedback detail"));
     assert!(!diagnostics.contains(&backend_detail));
-    assert!(diagnostics.len() <= 2 * 1024 + 1);
+    assert!(runtime_support::application_diagnostics(&diagnostics).len() <= 2 * 1024 + 1);
 
     let after: (f64, i64, String, i64) = observer
         .query_row(
