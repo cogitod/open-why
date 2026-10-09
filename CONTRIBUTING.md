@@ -12,7 +12,7 @@ toolchain.
 ```bash
 git clone https://github.com/cogitod/open-why.git
 cd open-why
-cargo build --release
+cargo build --release --locked
 ```
 
 `cargo build` fetches a prebuilt ONNX Runtime archive from `cdn.pyke.io` (via the
@@ -36,6 +36,10 @@ exclusions. Reviewed synthetic UUID fixtures may be listed in
 `hooks/leak-allowlist.txt`; secrets and provenance leaks may not be allowlisted.
 They also reject external GitHub Actions that are not pinned to a full commit
 SHA (and container actions that are not pinned by digest).
+
+The public onboarding smoke tests exercise setup, diagnostics, generated MCP
+configuration, and the synthetic walkthrough using isolated stores. Run them with
+`cargo test --locked --test onboarding` when changing the first-use flow.
 
 ## Before opening a PR
 

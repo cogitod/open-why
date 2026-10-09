@@ -23,74 +23,128 @@ The returned records are evidence to examine. They do not establish that a past
 decision was correct, and missing rationale is not permission to invent an
 explanation. You can use open-why independently of our other products.
 
-## What the LLM gets
+## Install from source
 
-You ask your LLM:
-
-> Why does this repository use SQLite?
-
-The LLM calls `open-why_ask` with the question and an absolute repository path.
-On first use, open-why indexes that repository. The result is structured for a
-follow-up exact read:
-
-```json
-{
-  "status": "ok",
-  "scope": "/path/to/repository",
-  "results": [
-    {
-      "id": "8f2c41ab0123456789abcdef0123456789abcdef",
-      "kind": "commit",
-      "title": "Use SQLite for local storage",
-      "preview": "Keep setup local and store rationale in one portable database.",
-      "preview_truncated": false,
-      "source": "commit",
-      "author": "Developer",
-      "date": "2026-08-12T10:00:00Z"
-    }
-  ]
-}
-```
-
-The LLM can pass the returned ID and scope to `open-why_get` for the complete
-current record, its Git links, and the supersession chain used to resolve it.
-
-## Install and connect
-
-open-why requires Rust 1.88 or newer.
+You need Git, Rust 1.88 or newer, and the native build tools for your operating
+system. This is a pre-1.0 project. Linux is the only platform continuously
+verified by CI; macOS is not yet a supported platform under the
+[stability contract](STABILITY.md).
 
 ```bash
 git clone https://github.com/cogitod/open-why.git
 cd open-why
-cargo install --path .
+cargo install --locked --path . --bin why
+why --version
 ```
 
-Configure your MCP client to run the installed binary:
+Ensure Cargo's binary directory (normally `~/.cargo/bin`) is on your `PATH`.
+Building downloads ONNX Runtime even when you intend to use lexical search;
+see [build troubleshooting](CONTRIBUTING.md#local-setup) for
+`ORT_LIB_LOCATION` when the download is unavailable. Normal lexical retrieval
+requires no embedding model or API key.
 
-```json
-{
-  "command": "/path/to/why",
-  "args": ["serve"],
-  "env": {
-    "OPEN_WHY_STORE_INSTANCE_ID": "your-client:open-why:replace-with-unique-id"
-  }
-}
+## Set up your coding agent
+
+Choose one database and reuse its configuration across clients. Setup creates a
+new store with a unique, persisted identity, or reads the identity of an existing
+compatible store. It prints configuration without editing your client settings,
+loading an embedding model, or making network requests.
+
+For Codex:
+
+```bash
+why setup --db "$HOME/.cache/open-why/open-why.db" --client codex
 ```
 
-Choose the store identity once, make it unique to this database, and keep it
-stable in the client configuration. The first launch binds the new database to
-that identity. Later launches verify the same identity before opening it.
+Merge the printed TOML into `~/.codex/config.toml`. For Claude Code, run the same
+command with `--client claude-code` and merge its JSON into your project's
+`.mcp.json`. Keep machine-specific paths out of version control. Update an
+existing `open-why` entry instead of adding a duplicate. Other clients can use
+`--client generic` for a command/args/env JSON entry.
 
-Then ask the LLM a question about the repository. The MCP call requires an
-absolute path:
+The snippets use an absolute executable path and set `OPEN_WHY_DB` and
+`OPEN_WHY_STORE_INSTANCE_ID`. Retain both values when copying the configuration.
+If you already supply an identity through the environment, setup honors it and
+refuses a mismatch. Never assign a new identity to an existing database.
+
+Reconnect your client and check that `open-why` and its tools appear in MCP
+status. See the official [Codex configuration guide](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+and [Claude Code configuration guide](https://code.claude.com/docs/en/mcp).
+A generated configuration alone does not establish a successful connection.
+
+## Get your first answer with evidence
+
+Paste this into your coding agent, replacing the path with an absolute Git
+working-tree path:
 
 ```text
-Use open-why to answer: why is the sandbox separate?
-Repository: /path/to/repository
+Use open-why_ask to answer: why does this repository use SQLite?
+Repository: /absolute/path/to/repository
+Then call open-why_get with a returned ID and the same scope. Cite the recorded
+reason, record ID, and available source or commit evidence. If the records do
+not establish the reason, say unknown. Do not edit the repository.
 ```
 
-Storage stays in a local SQLite file. Search is lexical-first unless a local or
-remote embedder is configured.
+`open-why_ask` returns scoped previews. `open-why_get` retrieves the complete
+current record, its Git links, and the supersession chain. These are recorded
+reasons to inspect, not proof that a decision was correct.
+
+Indexing reads commit messages and recognized decision Markdown files from Git,
+not uncommitted changes or all conversations. Automatic indexing happens only
+when the scope contains no records. After new commits—or if you captured a
+record before the first ask—call `open-why_index` with the same absolute
+repository path. Retrieval does not automatically refresh a populated scope.
+
+### Try an isolated example
+
+From the cloned open-why checkout, with `why` installed:
+
+```bash
+bash examples/quickstart.sh "$PWD/../open-why-demo" codex
+```
+
+Use `claude-code` or `generic` for another configuration format. The destination
+must not already exist, and its parent must exist. The script creates a synthetic
+Git repository, a dedicated database, and a configuration snippet, then prints
+the exact prompts to use. It does not change your client settings or your normal
+store. Use the snippet temporarily in place of an existing open-why entry and
+restore your usual configuration afterward.
+
+The example records a SQLite choice for offline use on one laptop with one
+writer and no database service. A successful first answer cites that reason and
+the original commit. The script also supplies a missing-evidence question and a
+capture/supersession exercise: resolving the original captured ID returns the
+replacement, while history retains both records. These are synthetic assertions,
+not measured database performance claims.
+
+After disconnecting the demo in your client, delete only the directory you
+created. Its repository, configuration, and database are all contained there.
+
+## Check and recover your setup
+
+```bash
+why doctor --db "$HOME/.cache/open-why/open-why.db" --repo /absolute/path/to/repository
+```
+
+Omit `--db` to use `OPEN_WHY_DB` or the normal default path. Omit `--repo` to
+check only the store and embedding configuration. Doctor is read-only: it does
+not create a database, write SQLite sidecars, load models, download files, or
+contact services. Exit status 1 means a check failed or could not be verified.
+Remote connectivity, model inference, client connectivity, and index freshness
+are not verified by this command.
+
+| Symptom | Recovery |
+| --- | --- |
+| `why` is not found | Add Cargo's binary directory to `PATH`; run `why --version`. |
+| No MCP tools appear | Check your client's MCP status, the snippet's absolute executable path, and its stderr; reconnect after updating configuration. |
+| `identity_mismatch` | Restore the identity from the original configuration, or choose a new database path for an independent store. |
+| Database path rejected | Use an absolute path without symlink components; resolve trusted directory aliases first. |
+| Empty or incompatible existing file | Choose a new path, use the compatible build, or restore a verified backup. Setup does not overwrite or repair existing files. |
+| `migration_required` | Preserve a consistent backup, then use the documented Rust Store open API with the original identity to migrate a recognized legacy store. Setup deliberately refuses migration. See [durability and recovery](STABILITY.md#durability-and-recovery). |
+| `live_wal_indeterminate` | Read-only inspection cannot verify this store. Close its writers and inspect a safely checkpointed snapshot, or use a new path. Do not delete WAL/SHM files. |
+| Local model missing or startup fails loading it | Restore the configured model files or unset the explicit model path. A cached model is also loaded automatically when present; move an unusable model cache aside to use lexical retrieval. |
+| Empty results or missing new decisions | Use the exact same absolute repository path as the scope, explicitly index it, and check that the reason was actually recorded. |
+| Remote embeddings configured unexpectedly | Inspect `OPEN_WHY_EMBED_URL` in the server environment. Removing it restores local/default selection; a connected cloud-model client still receives records it retrieves. |
 
 ## MCP tools
 
