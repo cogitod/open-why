@@ -25,20 +25,25 @@ An open-source project by [Cogito](https://cogito.cv). Apache-2.0.
 ## Install from source
 
 You need Git, Rust 1.88 or newer, and your platform's native build tools.
-`0.1.0-beta.1` is an **unreleased candidate**. From a reviewed checkout of this
-candidate, install the lexical build:
+Install the tagged `0.1.0-beta.1` lexical build:
 
 ```bash
-cargo install --locked --path . --bin why --no-default-features
+cargo install --locked --git https://github.com/cogitod/open-why \
+  --tag v0.1.0-beta.1 --bin why --no-default-features
 why --version
 ```
 
-This uses the checkout's committed lockfile. For version-specific source archive,
-tag and full-commit installation, see [release instructions](RELEASE.md). No beta
-tag or public binary is claimed to exist yet; do not use a moving-main install
-for reproducibility. Candidate artifacts must pass their install tests before
-publication. To remove the executable, run `cargo uninstall open-why`; your data
-and model cache remain on disk.
+This uses the tag's committed lockfile. The signed tag identifies reviewed commit
+`ffb32f6a9a9187df69ee812ea9a38a1014e4aea6`; use `--rev` with that full commit
+in place of `--tag` to pin the source identity directly. See
+[release instructions](RELEASE.md) for archive verification and upgrades.
+Prebuilt lexical archives are available in the
+[beta release](https://github.com/cogitod/open-why/releases/tag/v0.1.0-beta.1) for
+Apple Silicon and Ubuntu 24.04 x86-64 (**glibc 2.39 required**). Verify their
+checksums and provenance using the release instructions before extraction.
+
+To remove the executable, run `cargo uninstall open-why`; your data and model
+cache remain on disk.
 
 CI exercises Linux and macOS, including the pinned local-embedding evaluation.
 Passing CI does not establish the stronger stable-release guarantees. See
@@ -121,7 +126,7 @@ offline.
 With `why` installed, clone the repository to get the walkthrough:
 
 ```bash
-git clone https://github.com/cogitod/open-why.git
+git clone --branch v0.1.0-beta.1 --depth 1 https://github.com/cogitod/open-why.git
 cd open-why
 bash examples/quickstart.sh "$PWD/../open-why-demo" codex
 ```
