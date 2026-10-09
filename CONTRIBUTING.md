@@ -39,7 +39,12 @@ Debian 12 ARM64 / GCC 12 build of the default feature set failed linking
 `std::__cxx11::basic_string::_M_replace_cold`. The lexical build and tests work
 there; use `--no-default-features`, or a newer supported build environment for
 local embeddings. Do not assume installing Rust alone provides ONNX's native
-runtime requirements.
+runtime requirements. On Ubuntu 24.04 ARM64 containers, ONNX can emit
+`onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0`
+before the application starts. Inference still executes. Tests explicitly allow
+one exact copy of this vendor prefix on ARM64 Linux default builds; all unknown
+messages, application redaction checks and diagnostic limits remain enforced.
+The executable does not suppress it. Lexical builds do not link ONNX or emit it.
 
 ### Enable local checks
 

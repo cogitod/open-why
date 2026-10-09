@@ -1,5 +1,6 @@
 //! Real-process compatibility checks for the optional `why` CLI.
 
+mod runtime_support;
 use open_why::{ExternalDecision, Store};
 use rusqlite::Connection;
 use std::process::Command;
@@ -57,7 +58,10 @@ fn legacy_link_command_keeps_its_invocation_output_and_storage() {
         String::from_utf8(output.stdout).unwrap(),
         "linked abc123 -> cli-link\n"
     );
-    assert!(output.stderr.is_empty());
+    assert!(
+        runtime_support::application_diagnostics(&String::from_utf8(output.stderr).unwrap())
+            .is_empty()
+    );
 
     let stored: (String, String, String) = Connection::open(&db_path)
         .unwrap()
