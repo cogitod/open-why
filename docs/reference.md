@@ -54,6 +54,7 @@ Run `why --help` or `why <command> --help` for all arguments.
 | `OPEN_WHY_AUTO_FETCH=1` | Download the local model on first use if the cache is empty. |
 | `OPEN_WHY_EMBED_URL=https://example.invalid/embeddings` | Use an OpenAI-compatible embedding endpoint. |
 | `OPEN_WHY_EMBED_MODEL=model-name` | Choose the remote model; the default is `text-embedding-3-small`. |
+| `OPEN_WHY_ALLOW_REMOTE_CLONE=1` | Opt into a full managed Git clone; default is off because Git history can contain secrets. |
 | `OPEN_WHY_EMBED_API_KEY=...` | Send a bearer token to the remote embedding endpoint. |
 | `OPEN_WHY_DEBUG_RANK=1` | Print ranking diagnostics to standard error. |
 | `ORT_LIB_LOCATION=/path/to/onnxruntime` | Build against an installed ONNX Runtime. |
@@ -78,7 +79,12 @@ Indexing reads committed Git history and recognized decision Markdown. It runs
 automatically only when the scope is empty; call `open-why_index` after new
 commits or when records were captured before the first ask.
 
-Remote Git URLs use separate caches keyed by the full URL and verify the cached
+Use local repositories by default. Remote URL indexing requires explicit
+`OPEN_WHY_ALLOW_REMOTE_CLONE=1`; it retains the full cloned Git data, not only
+accepted rationale. Credential detection does not sanitize that checkout.
+See [data ingestion policy](../SECURITY.md#data-ingestion-policy-after-beta1).
+
+When explicitly enabled, remote Git URLs use separate caches keyed by the full URL and verify the cached
 origin before refresh. Different owners or hosts with the same repository name
 remain separate. Older basename caches are retained but no longer reused;
 reindex remote URLs after upgrading from a pre-beta build. Existing records in

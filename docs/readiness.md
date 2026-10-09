@@ -6,6 +6,10 @@ Runtime fixes are reviewed and merged at `ffb32f6` (PR #45). The signed
 in PR #46. See [verification evidence](verification.md). The remaining work has
 one home in the [roadmap](roadmap.md).
 
+Credential and transport hardening after this tag is tracked in
+[SECURITY.md](../SECURITY.md) and the [unreleased changelog](../CHANGELOG.md#unreleased).
+It requires a follow-up release before it applies to downloadable binaries.
+
 Ready means an outside developer can understand the purpose, install an
 identifiable version, retrieve useful evidence, maintain data safely, and
 contribute a tested change using public material alone. This is weaker than the

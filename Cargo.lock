@@ -906,6 +906,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ort",
+ "regex",
  "rusqlite",
  "rustix",
  "semver",

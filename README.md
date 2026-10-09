@@ -35,7 +35,10 @@ passed a bounded evidence-read check. Independent human first use and broader
 client coverage remain open; see [readiness and limitations](docs/readiness.md).
 
 Security hardening added after this tag is described in [SECURITY.md](SECURITY.md).
-A follow-up release is pending.
+A follow-up release is pending. On `main`, recognizable credentials are rejected
+before ingestion or embedding; ordinary private rationale remains local unless
+a client or remote embedding provider is explicitly connected. See the
+[data policy and limits](SECURITY.md#data-ingestion-policy-after-beta1).
 
 ## Install from source
 

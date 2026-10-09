@@ -180,6 +180,13 @@ fn serve_io_checked(
 
 fn handle_message(store: &db::Store, message: &Value, as_of: i64) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
+    if crate::privacy::check_value(&id).is_err() {
+        return Some(jsonrpc_error(
+            Value::Null,
+            -32600,
+            "request id rejected by sensitive-data policy",
+        ));
+    }
     if !matches!(&id, Value::Null | Value::Number(_))
         && !matches!(&id, Value::String(value) if value.len() <= MAX_ID_BYTES)
     {
@@ -198,6 +205,13 @@ fn handle_message(store: &db::Store, message: &Value, as_of: i64) -> Option<Valu
     let Some(method) = object.get("method").and_then(Value::as_str) else {
         return Some(jsonrpc_error(id, -32600, "method must be a string"));
     };
+    if crate::privacy::check_text(method).is_err() {
+        return Some(jsonrpc_error(
+            id,
+            -32600,
+            "method rejected by sensitive-data policy",
+        ));
+    }
     match method {
         "initialize" => Some(json!({
             "jsonrpc":"2.0",

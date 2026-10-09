@@ -33,6 +33,7 @@ impl Sandbox {
             .env_remove("OPEN_WHY_EMBED_URL")
             .env_remove("OPEN_WHY_EMBED_API_KEY")
             .env_remove("OPEN_WHY_DEBUG_RANK")
+            .env_remove("OPEN_WHY_ALLOW_REMOTE_CLONE")
             .env("OPEN_WHY_AUTO_FETCH", "0")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null");

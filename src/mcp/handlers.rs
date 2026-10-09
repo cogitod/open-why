@@ -22,6 +22,10 @@ use crate::{db, miner};
 use serde_json::{json, Value};
 
 pub(super) fn dispatch_tool(store: &db::Store, name: &str, args: &Value, as_of: i64) -> ToolResult {
+    crate::privacy::check_text(name)
+        .map_err(|error| ToolError::new("sensitive_data", error.to_string()))?;
+    crate::privacy::check_value(args)
+        .map_err(|error| ToolError::new("sensitive_data", error.to_string()))?;
     let Some(spec) = TOOL_SPECS.iter().find(|spec| spec.name == name) else {
         return Err(ToolError::new(
             "unknown_tool",

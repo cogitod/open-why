@@ -3,6 +3,18 @@
 Every release entry records user-visible changes, upgrade implications and known
 limits. Unreleased entries are not evidence that artifacts are publicly available.
 
+## Unreleased
+
+- Reject recognizable credentials at library, CLI, and MCP ingestion boundaries
+  before writes or embedding calls. Entire batches fail atomically; records are
+  not silently redacted. This does not classify arbitrary confidential prose or
+  scrub existing databases, backups, or Git caches.
+- Remote URL indexing now requires `OPEN_WHY_ALLOW_REMOTE_CLONE=1`. Prefer local
+  repositories: a full Git checkout can retain secrets outside the rationale store.
+- Bound MCP frames and request IDs, redact leak-scanner findings, protect Git
+  caches with owner-only permissions, and reject credential-bearing clone URLs.
+  Required CI now includes checksum-pinned Gitleaks history scanning.
+
 ## 0.1.0-beta.1 — 2026-10-09
 
 - Follow-up review: doctor now checks all pinned model inputs/digests and refuses

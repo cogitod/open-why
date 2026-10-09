@@ -15,6 +15,7 @@ fn git(s: &Sandbox, path: &Path, args: &[&str]) {
 fn index(s: &Sandbox, owner: &str) -> Output {
     // Public-looking URLs are redirected to synthetic local Git fixtures; no network access.
     s.command()
+        .env("OPEN_WHY_ALLOW_REMOTE_CLONE", "1")
         .env("OPEN_WHY_DB", s.0.join("store.db"))
         .env("OPEN_WHY_STORE_INSTANCE_ID", "test:repositories")
         .env("GIT_CONFIG_COUNT", "1")

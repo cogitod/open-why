@@ -168,6 +168,7 @@ impl Store {
     /// space-joined tag array when present. Returns the JSON vector
     /// when an embedder is configured and succeeds; `None` keeps the row lexical.
     fn embed_text(&self, title: &str, content: &str, tags: Option<&str>) -> Option<String> {
+        crate::privacy::check(&(title, content, tags)).ok()?;
         let embedder = self.embedder.as_ref()?;
         let mut text = String::new();
         let t = title.trim();
@@ -184,11 +185,13 @@ impl Store {
                 }
             }
         }
+        crate::privacy::check_text(&text).ok()?;
         let vec = embedder.embed(&text).ok()?;
         serde_json::to_string(&vec).ok()
     }
 
     fn query_embedding(&self, query: &str) -> Option<Vec<f32>> {
+        crate::privacy::check_text(query).ok()?;
         self.embedder.as_ref()?.embed(query).ok()
     }
 }

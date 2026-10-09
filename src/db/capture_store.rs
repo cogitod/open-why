@@ -4,6 +4,7 @@ impl Store {
     /// Capture one decision. Idempotent: re-capturing the same (identity, content)
     /// returns the existing id. `supersedes` retires an older decision (point-in-time).
     pub fn capture(&self, d: &Decision, scope: &str, supersedes: Option<&str>) -> Result<String> {
+        crate::privacy::check(&(d, scope, supersedes))?;
         let identity = format!("capture:{scope}:{}:{}", d.kind, d.subject);
         let content_digest = digest(&format!("{}\n{}", d.subject, d.body));
         let id = digest(&format!("{identity}\n{content_digest}"));
@@ -142,6 +143,7 @@ impl Store {
             fact_key,
             supersedes,
         } = request;
+        crate::privacy::check(&(d, scope, id, valid_from, fact_key, supersedes))?;
         if valid_from.is_some_and(|value| iso_to_epoch(value).is_none()) {
             return Err(CurrentRecordErrorCode::InvalidTemporalData.into());
         }
@@ -305,6 +307,8 @@ impl Store {
     }
 
     fn import_external_exact(&self, rows: &[ExternalDecision]) -> Result<usize> {
+        // Validate the entire batch before writes or embedding-provider calls.
+        crate::privacy::check(rows)?;
         let tx = self.conn.unchecked_transaction()?;
         let mut prepared = Vec::with_capacity(rows.len());
         let mut candidates = HashMap::new();
