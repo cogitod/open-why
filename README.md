@@ -168,3 +168,11 @@ Report a reproducible bug or propose a focused improvement. The
 through PRs with passing CI; this single-maintainer project does not claim
 independent human review. Report vulnerabilities through the
 [private security channel](SECURITY.md).
+
+<!-- consolidation:ownership:start -->
+## Maintenance
+
+open-why is manually maintained. The Rust library, CLI and MCP server share the same
+source and versioned evidence contracts. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md)
+and the repository’s protected pull-request route, including its required CI checks.
+<!-- consolidation:ownership:end -->
