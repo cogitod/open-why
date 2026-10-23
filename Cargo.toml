@@ -35,4 +35,4 @@ rustix = { version = "1", features = ["fs"] }
 strip = false
 
 [dev-dependencies]
-toml = "0.8"
+toml = "1.1"
